@@ -108,9 +108,11 @@ class WriteStream(object):
     `_py_write_stream` is set during erdos.run(), and should never be set
     manually.
     """
-    def __init__(self, _py_write_stream=None):
+    def __init__(self, _py_write_stream=None, _name=None, _id=None):
         self._py_write_stream = PyWriteStream(
         ) if _py_write_stream is None else _py_write_stream
+        self._name = _name
+        self._id = _id
 
     def is_closed(self):
         """Whether a top watermark message has been sent."""
@@ -127,6 +129,13 @@ class WriteStream(object):
             raise TypeError("msg must inherent from erdos.Message!")
 
         internal_msg = _to_py_message(msg)
+
+        # Raise exception with the name.
+        try:
+            self._py_write_stream.send(internal_msg)
+        except Exception as e:
+            raise Exception("Exception on stream {} ({})".format(
+                self._name, self._id)) from e
         return self._py_write_stream.send(internal_msg)
 
 
