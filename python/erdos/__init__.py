@@ -117,40 +117,8 @@ def run(graph_filename=None, start_port=9000):
             lowest port ERDOS will use to establish TCP connections between
             operators.
     """
-    data_addresses = [
-        "127.0.0.1:{port}".format(port=start_port + i)
-        for i in range(_num_py_operators + 1)
-    ]
-    control_addresses = [
-        "127.0.0.1:{port}".format(port=start_port + len(data_addresses) + i)
-        for i in range(_num_py_operators + 1)
-    ]
-
-    def runner(node_id, data_addresses, control_addresses):
-        _internal.run(node_id, data_addresses, control_addresses)
-
-    processes = [
-        mp.Process(target=runner, args=(i, data_addresses, control_addresses))
-        for i in range(1, _num_py_operators + 1)
-    ]
-
-    for p in processes:
-        p.start()
-
-    # Needed to shut down child processes
-    def sigint_handler(sig, frame):
-        for p in processes:
-            p.terminate()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, sigint_handler)
-
-    # The driver must always be on node 0 otherwise ingest and extract streams
-    # will break
-    _internal.run_async(0, data_addresses, control_addresses, graph_filename)
-
-    for p in processes:
-        p.join()
+    driver_handle = run_async(graph_filename, start_port)
+    driver_handle.wait_for_completion()
 
 
 def run_async(graph_filename=None, start_port=9000):
@@ -283,6 +251,11 @@ class NodeHandle(object):
         print("shutting down node")
         self.py_node_handle.shutdown_node()
         print("done shutting down")
+
+    def wait_for_completion(self):
+        """ Waits for the completion of all the operators in the dataflow """
+        for p in self.processes:
+            p.join()
 
 
 __all__ = [
