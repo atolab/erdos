@@ -16,6 +16,22 @@ import erdos.utils
 
 _num_py_operators = 0
 
+# Set the top-level logger for ERDOS logging.
+# Users can change the logging level to the required level by calling setLevel
+# erdos.logger.setLevel(logging.DEBUG)
+import logging
+import sys
+
+FORMAT = "%(asctime)s.%(msecs)03d %(name)s %(levelname)s: %(message)s"
+DATE_FORMAT = "%Y-%m-%d,%H:%M:%S"
+formatter = logging.Formatter(FORMAT, datefmt=DATE_FORMAT)
+default_handler = logging.StreamHandler(sys.stderr)
+default_handler.setFormatter(formatter)
+
+logger = logging.getLogger(__name__)
+logger.addHandler(default_handler)
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 def connect(op_type, config, read_streams, *args, **kwargs):
     """Registers the operator and its connected streams on the dataflow graph.
@@ -50,9 +66,14 @@ def connect(op_type, config, read_streams, *args, **kwargs):
     global _num_py_operators
     _num_py_operators += 1
     node_id = _num_py_operators
+    logger.debug("Connecting operator #{num} ({name}) to the graph.".format(
+        num=node_id, name=config.name))
 
     py_read_streams = []
-    for stream in read_streams:
+    op_read_streams = list(inspect.signature(op_type.connect).parameters.keys())
+    for index, stream in enumerate(read_streams):
+        logger.debug("Passing the stream {} to operator {}.".format(
+            op_read_streams[index], config.name))
         if isinstance(stream, LoopStream):
             py_read_streams.append(stream._py_loop_stream.to_py_read_stream())
         elif isinstance(stream, IngestStream):
@@ -61,11 +82,15 @@ def connect(op_type, config, read_streams, *args, **kwargs):
         elif isinstance(stream, ReadStream):
             py_read_streams.append(stream._py_read_stream)
         else:
-            raise TypeError("Unable to convert {stream} to ReadStream".format(
-                stream=stream))
+            raise TypeError(
+                "Unable to convert {stream} of type {stream_type} to ReadStream"
+                .format(stream=stream, stream_type=type(stream)))
 
     internal_streams = _internal.connect(op_type, config, py_read_streams,
                                          args, kwargs, node_id)
+    logger.debug("Converting {} write stream(s) returned by "
+                 "operator {} to read stream(s).".format(
+                     len(internal_streams), config.name))
     return [ReadStream(_py_read_stream=s) for s in internal_streams]
 
 

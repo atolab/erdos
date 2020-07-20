@@ -1,10 +1,12 @@
 import pickle
+import logging
 
 from erdos.message import Message, WatermarkMessage
 from erdos.internal import (PyReadStream, PyWriteStream, PyLoopStream,
                             PyIngestStream, PyExtractStream, PyMessage)
 from erdos.timestamp import Timestamp
 
+logger = logging.getLogger(__name__)
 
 def _parse_message(internal_msg):
     """Creates a Message from an internal stream's response.
@@ -40,9 +42,12 @@ class ReadStream(object):
     `_py_read_stream` is set during erdos.run(), and should never be set
     manually.
     """
-    def __init__(self, _py_read_stream=None):
+    def __init__(self, _py_read_stream=None, _name=None, _id=None):
+        logger.debug("Initializing ReadStream with the name: {}, and ID: {}.".format(_name, _id))
         self._py_read_stream = PyReadStream(
         ) if _py_read_stream is None else _py_read_stream
+        self._name = _name
+        self._id = _id
 
     def is_closed(self):
         """Whether a top watermark message has been received."""
