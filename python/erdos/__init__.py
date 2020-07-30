@@ -142,6 +142,8 @@ def run_async(graph_filename=None, start_port=9000):
         "127.0.0.1:{port}".format(port=start_port + len(data_addresses) + i)
         for i in range(_num_py_operators + 1)
     ]
+    logger.debug(
+        "Running the dataflow graph on addresses: {}".format(data_addresses))
 
     def runner(node_id, data_addresses, control_addresses):
         _internal.run(node_id, data_addresses, control_addresses)
