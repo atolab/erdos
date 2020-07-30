@@ -61,14 +61,13 @@ impl Node {
     /// Creates a new node.
     pub fn new(config: Configuration) -> Self {
         let id = config.index;
-        let logger = config.logger.clone();
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         Self {
             config,
             id,
             channels_to_receivers: Arc::new(Mutex::new(ChannelsToReceivers::new())),
             channels_to_senders: Arc::new(Mutex::new(ChannelsToSenders::new())),
-            control_handler: ControlMessageHandler::new(logger),
+            control_handler: ControlMessageHandler::new(),
             initialized: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
             shutdown_tx,
             shutdown_rx: Some(shutdown_rx),
@@ -79,7 +78,7 @@ impl Node {
     ///
     /// The method never returns.
     pub fn run(&mut self) {
-        slog::debug!(self.config.logger, "Node {}: running", self.id);
+        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: running", self.id);
         // Build a runtime with n threads.
         let mut runtime = Builder::new()
             .threaded_scheduler()
@@ -89,7 +88,7 @@ impl Node {
             .build()
             .unwrap();
         runtime.block_on(self.async_run());
-        slog::debug!(self.config.logger, "Node {}: finished running", self.id);
+        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: finished running", self.id);
     }
 
     /// Runs an ERDOS node in a seperate OS thread.
@@ -124,7 +123,11 @@ impl Node {
         *started = true;
         cvar.notify_all();
 
-        slog::debug!(self.config.logger, "Node {}: done initializing.", self.id);
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Node {}: done initializing.",
+            self.id
+        );
     }
 
     /// Splits a vector of TCPStreams into `DataSender`s and `DataReceiver`s.
@@ -249,7 +252,7 @@ impl Node {
 
     async fn broadcast_local_operators_initialized(&mut self) -> Result<(), String> {
         slog::debug!(
-            self.config.logger,
+            crate::TERMINAL_LOGGER,
             "Node {}: initialized all operators on this node.",
             self.id
         );
@@ -314,7 +317,7 @@ impl Node {
                 .clone()
                 .unwrap_or_else(|| format!("{}", operator_info.id));
             slog::debug!(
-                self.config.logger,
+                crate::TERMINAL_LOGGER,
                 "Node {}: starting operator {}",
                 self.id,
                 name
@@ -360,20 +363,11 @@ impl Node {
     async fn async_run(&mut self) {
         // Assign values used later to avoid lifetime errors.
         let num_nodes = self.config.data_addresses.len();
-        let logger = self.config.logger.clone();
         // Create TCPStreams between all node pairs.
-        let control_streams = communication::create_tcp_streams(
-            self.config.control_addresses.clone(),
-            self.id,
-            &self.config.logger,
-        )
-        .await;
-        let data_streams = communication::create_tcp_streams(
-            self.config.data_addresses.clone(),
-            self.id,
-            &self.config.logger,
-        )
-        .await;
+        let control_streams =
+            communication::create_tcp_streams(self.config.control_addresses.clone(), self.id).await;
+        let data_streams =
+            communication::create_tcp_streams(self.config.data_addresses.clone(), self.id).await;
         let (control_senders, control_receivers) =
             self.split_control_streams(control_streams).await;
         let (senders, receivers) = self.split_data_streams(data_streams).await;
@@ -398,32 +392,32 @@ impl Node {
                 control_recvs_fut
             ) {
                 slog::error!(
-                    logger,
+                    crate::TERMINAL_LOGGER,
                     "Non-fatal network communication error; this should not happen! {:?}",
                     e
                 );
             }
             tokio::select! {
                 Err(e) = ops_fut => slog::error!(
-                    logger,
+                    crate::TERMINAL_LOGGER,
                     "Error running operators on node {:?}: {:?}", self.id, e
                 ),
-                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+                _ = shutdown_fut => slog::debug!(crate::TERMINAL_LOGGER, "Node {}: shutting down", self.id),
             }
         } else {
             tokio::select! {
-                Err(e) = senders_fut => slog::error!(logger, "Error with data senders: {:?}", e),
-                Err(e) = recvs_fut => slog::error!(logger, "Error with data receivers: {:?}", e),
-                Err(e) = control_senders_fut => slog::error!(logger, "Error with control senders: {:?}", e),
+                Err(e) = senders_fut => slog::error!(crate::TERMINAL_LOGGER, "Error with data senders: {:?}", e),
+                Err(e) = recvs_fut => slog::error!(crate::TERMINAL_LOGGER, "Error with data receivers: {:?}", e),
+                Err(e) = control_senders_fut => slog::error!(crate::TERMINAL_LOGGER, "Error with control senders: {:?}", e),
                 Err(e) = control_recvs_fut => slog::error!(
-                    self.config.logger,
+                    crate::TERMINAL_LOGGER,
                     "Error with control receivers: {:?}", e
                 ),
                 Err(e) = ops_fut => slog::error!(
-                    logger,
+                    crate::TERMINAL_LOGGER,
                     "Error running operators on node {:?}: {:?}", self.id, e
                 ),
-                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+                _ = shutdown_fut => slog::debug!(crate::TERMINAL_LOGGER, "Node {}: shutting down", self.id),
             }
         }
     }

@@ -79,8 +79,7 @@ impl<D: Data> WriteStream<D> {
     }
 
     fn close_stream(&mut self) {
-        let logger = crate::get_terminal_logger();
-        slog::debug!(logger, "Closing write stream {}", self.id);
+        slog::debug!(crate::TERMINAL_LOGGER, "Closing write stream {}", self.id);
         self.stream_closed = true;
     }
 

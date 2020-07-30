@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use slog::{self, Logger};
+use slog::{self};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::node::NodeId;
@@ -9,8 +9,6 @@ use super::{CommunicationError, ControlMessage};
 
 // TODO: update `channels_to_nodes` for fault tolerance in case nodes to go down.
 pub struct ControlMessageHandler {
-    /// Logger for error messages.
-    logger: Logger,
     /// Sender to clone so other tasks can send messages to `self.rx`.
     tx: UnboundedSender<ControlMessage>,
     /// Receiver for all `ControlMessage`s
@@ -24,10 +22,9 @@ pub struct ControlMessageHandler {
 
 #[allow(dead_code)]
 impl ControlMessageHandler {
-    pub fn new(logger: Logger) -> Self {
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
-            logger,
             tx,
             rx,
             channels_to_control_senders: HashMap::new(),
@@ -45,7 +42,7 @@ impl ControlMessageHandler {
     ) {
         if let Some(_) = self.channels_to_control_senders.insert(node_id, tx) {
             slog::error!(
-                self.logger,
+                crate::TERMINAL_LOGGER,
                 "ControlMessageHandler: overwrote channel to control sender for node {}",
                 node_id
             );
@@ -80,7 +77,7 @@ impl ControlMessageHandler {
     ) {
         if let Some(_) = self.channels_to_control_receivers.insert(node_id, tx) {
             slog::error!(
-                self.logger,
+                crate::TERMINAL_LOGGER,
                 "ControlMessageHandler: overwrote channel to control receiver for node {}",
                 node_id
             );
@@ -115,7 +112,7 @@ impl ControlMessageHandler {
     ) {
         if let Some(_) = self.channels_to_data_senders.insert(node_id, tx) {
             slog::error!(
-                self.logger,
+                crate::TERMINAL_LOGGER,
                 "ControlMessageHandler: overwrote channel to data sender for node {}",
                 node_id
             );
@@ -150,7 +147,7 @@ impl ControlMessageHandler {
     ) {
         if let Some(_) = self.channels_to_data_receivers.insert(node_id, tx) {
             slog::error!(
-                self.logger,
+                crate::TERMINAL_LOGGER,
                 "ControlMessageHandler: overwrote channel to data receiver for node {}",
                 node_id
             );

@@ -54,6 +54,12 @@ impl Graph {
         write_stream_ids: Vec<StreamId>,
         runner: F,
     ) {
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Adding operator {} to the graph.",
+            name.clone().unwrap_or(String::from("<None>"))
+        );
+        // Unalias loop stream identifiers.
         let read_stream_ids: Vec<StreamId> = read_stream_ids
             .into_iter()
             .map(|id| self.resolve_stream_id(id))
@@ -85,6 +91,12 @@ impl Graph {
         for<'a> D: Data + Deserialize<'a>,
     {
         let stream_id = write_stream.get_id();
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Adding operator stream (ID: {}, Operator ID: {}) to the graph.",
+            stream_id,
+            operator_id
+        );
         let mut stream_metadata =
             StreamMetadata::new::<D>(stream_id, Vertex::Operator(operator_id));
         self.add_channels(&mut stream_metadata);
@@ -100,6 +112,12 @@ impl Graph {
     {
         let stream_id = ingest_stream.get_id();
         let node_id = ingest_stream.get_node_id();
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Adding ingest stream (ID: {}, Driver ID: {}) to the graph.",
+            stream_id,
+            node_id
+        );
         // Add stream to driver
         let driver = self
             .drivers
@@ -121,6 +139,12 @@ impl Graph {
     {
         let stream_id = extract_stream.get_id();
         let node_id = extract_stream.get_node_id();
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Adding extract stream (ID: {}, Driver ID: {}) to the graph.",
+            stream_id,
+            node_id
+        );
         // Add stream to driver
         let driver = self
             .drivers
@@ -144,6 +168,11 @@ impl Graph {
     where
         for<'a> D: Data + Deserialize<'a>,
     {
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Adding loop stream (ID: {}) to the graph.",
+            loop_stream.get_id()
+        );
         let write_stream = WriteStream::<D>::new_from_id(loop_stream.get_id());
         // TODO: clean up this hack
         self.add_operator_stream(OperatorId::nil(), &write_stream);
@@ -190,6 +219,7 @@ impl Graph {
 
     /// Adds channels to the StreamMetadata based on the graph
     fn add_channels(&self, stream_metadata: &mut StreamMetadata) {
+        slog::debug!(crate::TERMINAL_LOGGER, "CALLED add_channels");
         let stream_id = stream_metadata.get_id();
         let source = stream_metadata.get_source();
         // Add channels to operators
@@ -199,6 +229,12 @@ impl Graph {
                 .iter()
                 .filter(|&&id| stream_id == id)
             {
+                slog::debug!(
+                    crate::TERMINAL_LOGGER,
+                    "Adding a channel from the stream {} to the operator {}",
+                    stream_id,
+                    operator.id
+                );
                 stream_metadata.add_channel(Channel::Unscheduled(ChannelMetadata::new(
                     stream_id,
                     source.clone(),
@@ -213,6 +249,12 @@ impl Graph {
                 .iter()
                 .filter(|&&id| stream_id == id)
             {
+                slog::debug!(
+                    crate::TERMINAL_LOGGER,
+                    "Adding a channel from the stream {} to the driver {}",
+                    stream_id,
+                    driver.id
+                );
                 stream_metadata.add_channel(Channel::Unscheduled(ChannelMetadata::new(
                     stream_id,
                     source.clone(),
