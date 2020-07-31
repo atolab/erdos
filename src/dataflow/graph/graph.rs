@@ -219,7 +219,6 @@ impl Graph {
 
     /// Adds channels to the StreamMetadata based on the graph
     fn add_channels(&self, stream_metadata: &mut StreamMetadata) {
-        slog::debug!(crate::TERMINAL_LOGGER, "CALLED add_channels");
         let stream_id = stream_metadata.get_id();
         let source = stream_metadata.get_source();
         // Add channels to operators

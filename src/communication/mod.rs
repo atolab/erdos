@@ -99,15 +99,20 @@ pub async fn create_tcp_streams(
 ) -> Vec<(NodeId, TcpStream)> {
     let node_addr = node_addrs[node_id].clone();
     // Connect to the nodes that have a lower id than the node.
-    let connect_streams_fut = connect_to_nodes(node_addrs[..node_id].to_vec(), node_id);
+    let connect_fut = connect_to_nodes(node_addrs[..node_id].to_vec(), node_id);
     // Wait for connections from the nodes that have a higher id than the node.
-    let stream_fut = await_node_connections(node_addr, node_addrs.len() - node_id - 1);
+    let wait_for_connect_fut = await_node_connections(node_addr, node_addrs.len() - node_id - 1);
     // Wait until all connections are established.
-    match future::try_join(connect_streams_fut, stream_fut).await {
-        Ok((mut streams, await_streams)) => {
-            // Streams contains a TCP stream for each other node.
-            streams.extend(await_streams);
-            streams
+    match future::try_join(connect_fut, wait_for_connect_fut).await {
+        Ok((mut connect_streams, wait_for_connect_streams)) => {
+            slog::debug!(
+                crate::TERMINAL_LOGGER,
+                "Node {}: finished connecting to other nodes.",
+                node_id
+            );
+            // Merge all of the connections together, and return the streams.
+            connect_streams.extend(wait_for_connect_streams);
+            connect_streams
         }
         Err(e) => {
             slog::error!(

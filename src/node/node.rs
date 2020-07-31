@@ -137,7 +137,7 @@ impl Node {
     ) -> (Vec<DataSender>, Vec<DataReceiver>) {
         let mut sink_halves = Vec::new();
         let mut stream_halves = Vec::new();
-        while let Some((node_id, stream)) = streams.pop() {
+        for (node_id, stream) in streams {
             // Use the message codec to divide the TCP stream data into messages.
             let framed = Framed::new(stream, MessageCodec::new());
             let (split_sink, split_stream) = framed.split();
@@ -364,8 +364,10 @@ impl Node {
         // Assign values used later to avoid lifetime errors.
         let num_nodes = self.config.data_addresses.len();
         // Create TCPStreams between all node pairs.
+        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: Creating control connections.", self.id);
         let control_streams =
             communication::create_tcp_streams(self.config.control_addresses.clone(), self.id).await;
+        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: Creating data connections.", self.id);
         let data_streams =
             communication::create_tcp_streams(self.config.data_addresses.clone(), self.id).await;
         let (control_senders, control_receivers) =
