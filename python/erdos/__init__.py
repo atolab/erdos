@@ -4,6 +4,7 @@ import signal
 import sys
 
 from functools import wraps
+from operator import attrgetter
 
 import erdos.internal as _internal
 from erdos.streams import (ReadStream, WriteStream, LoopStream, IngestStream,
@@ -118,6 +119,7 @@ def run(graph_filename=None, start_port=9000):
             operators.
     """
     driver_handle = run_async(graph_filename, start_port)
+    logger.debug("Waiting for the dataflow to complete ...")
     driver_handle.wait_for_completion()
 
 
@@ -183,17 +185,30 @@ def add_watermark_callback(read_streams, write_streams, callback):
         callback (timestamp, list of WriteStream -> None): a low watermark
             callback.
     """
+    logger.debug("Add watermark callback {name} to the input streams: {_input}"
+                 ", and passing the output streams: {_output}".format(
+                     name=callback.__name__,
+                     _input=list(map(attrgetter('_name'), read_streams)),
+                     _output=list(map(attrgetter('_name'), write_streams))))
+
     def internal_watermark_callback(coordinates, is_top):
         timestamp = Timestamp(coordinates=coordinates, is_top=is_top)
         callback(timestamp, *write_streams)
 
-    py_read_streams = [s._py_read_stream for s in read_streams]
-    _internal.add_watermark_callback(py_read_streams,
-                                     internal_watermark_callback)
+    _internal.add_watermark_callback(
+        list(map(attrgetter('_py_read_stream'), read_streams)),
+        internal_watermark_callback)
 
 
 def _flow_watermark_callback(timestamp, *write_streams):
-    """Flows a watermark to all write streams."""
+    """Flows a watermark to all write streams.
+
+    Args:
+        timestamp (:py:class:`erdos.Timestamp`): The timestamp of the watermark
+            to be sent to downstream operators.
+        write_streams (:py:class:`erdos.WriteStream`): The write streams to
+            send the watermark to.
+    """
     for write_stream in write_streams:
         write_stream.send(WatermarkMessage(timestamp))
 
