@@ -1,12 +1,15 @@
 import pickle
 import logging
+from operator import attrgetter
 
+import erdos
 from erdos.message import Message, WatermarkMessage
 from erdos.internal import (PyReadStream, PyWriteStream, PyLoopStream,
                             PyIngestStream, PyExtractStream, PyMessage)
 from erdos.timestamp import Timestamp
 
 logger = logging.getLogger(__name__)
+
 
 def _parse_message(internal_msg):
     """Creates a Message from an internal stream's response.
@@ -42,8 +45,11 @@ class ReadStream(object):
     `_py_read_stream` is set during erdos.run(), and should never be set
     manually.
     """
+
     def __init__(self, _py_read_stream=None, _name=None, _id=None):
-        logger.debug("Initializing ReadStream with the name: {}, and ID: {}.".format(_name, _id))
+        logger.debug(
+            "Initializing ReadStream with the name: {}, and ID: {}.".format(
+                _name, _id))
         self._py_read_stream = PyReadStream(
         ) if _py_read_stream is None else _py_read_stream
         self._name = _name
@@ -79,6 +85,13 @@ class ReadStream(object):
         if write_streams is None:
             write_streams = []
 
+        logger.debug("Add callback {name} to the input stream {_input}, "
+                     "and passing the output streams: {_output}".format(
+                         name=callback.__name__,
+                         _input=self._name,
+                         _output=list(map(attrgetter('_name'),
+                                          write_streams))))
+
         def internal_callback(serialized):
             msg = pickle.loads(serialized)
             callback(msg, *write_streams)
@@ -96,6 +109,12 @@ class ReadStream(object):
         """
         if write_streams is None:
             write_streams = []
+        logger.debug(
+            "Add watermark callback {name} to the input stream "
+            "{_input}, and passing the output streams: {_output}".format(
+                name=callback.__name__,
+                _input=self._name,
+                _output=list(map(attrgetter('_name'), write_streams))))
 
         def internal_watermark_callback(coordinates, is_top):
             timestamp = Timestamp(coordinates=coordinates, is_top=is_top)
@@ -113,6 +132,7 @@ class WriteStream(object):
     `_py_write_stream` is set during erdos.run(), and should never be set
     manually.
     """
+
     def __init__(self, _py_write_stream=None, _name=None, _id=None):
         self._py_write_stream = PyWriteStream(
         ) if _py_write_stream is None else _py_write_stream
@@ -134,6 +154,8 @@ class WriteStream(object):
             raise TypeError("msg must inherent from erdos.Message!")
 
         internal_msg = _to_py_message(msg)
+        logger.debug("Sending message {} on the stream {}".format(
+            msg, self._name))
 
         # Raise exception with the name.
         try:
@@ -149,17 +171,23 @@ class LoopStream(object):
 
     Must call `set` on a ReadStream to complete the loop.
     """
-    def __init__(self):
+
+    def __init__(self, _name=None):
         self._py_loop_stream = PyLoopStream()
+        self._name = _name
 
     def set(self, read_stream):
+        logger.debug("Setting the read stream {} to the loop stream {}".format(
+            read_stream._name, self._name))
         self._py_loop_stream.set(read_stream._py_read_stream)
 
 
 class IngestStream(object):
     """Used to send messages from outside of operators."""
-    def __init__(self):
-        self._py_ingest_stream = PyIngestStream(0)
+
+    def __init__(self, _name=None):
+        self._py_ingest_stream = PyIngestStream(0, _name)
+        self._name = _name
 
     def is_closed(self):
         """Whether the stream is closed.
@@ -179,6 +207,9 @@ class IngestStream(object):
         if not isinstance(msg, Message):
             raise TypeError("msg must inherent from erdos.Message!")
 
+        logger.debug("Sending message {} on the Ingest stream {}".format(
+            msg, self._name))
+
         internal_msg = _to_py_message(msg)
         self._py_ingest_stream.send(internal_msg)
 
@@ -189,8 +220,16 @@ class ExtractStream(object):
     Args:
         read_stream (ReadStream): the stream from which to read messages.
     """
-    def __init__(self, read_stream):
-        self._py_extract_stream = PyExtractStream(read_stream._py_read_stream)
+
+    def __init__(self, read_stream, _name=None):
+        if not isinstance(read_stream, erdos.ReadStream):
+            raise ValueError(
+                "ExtractStream needs to be initialized with a ReadStream. "
+                "Received a {}".format(type(read_stream)))
+        self._py_extract_stream = PyExtractStream(
+            read_stream._py_read_stream,
+            _name,
+        )
 
     def is_closed(self):
         """Whether the stream is closed.

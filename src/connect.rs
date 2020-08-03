@@ -95,10 +95,7 @@ macro_rules! make_operator_executor {
             }
             // Notify node that operator is done setting up
             if let Err(e) = control_sender.send(ControlMessage::OperatorInitialized(config.id)) {
-                slog::error!(
-                    $crate::TERMINAL_LOGGER,
-                    "Error sending OperatorInitialized message to control handler: {:?}", e
-                );
+                panic!("Error sending OperatorInitialized message to control handler: {:?}", e);
             }
             let mut op_executor = OperatorExecutor::new(op, config, op_ex_streams, control_receiver);
             op_executor

@@ -22,10 +22,16 @@ pub struct PyReadStream {
 #[pymethods]
 impl PyReadStream {
     #[new]
-    fn new(obj: &PyRawObject) {
-        obj.init(Self {
-            read_stream: ReadStream::new(),
-        });
+    fn new(obj: &PyRawObject, name: Option<String>) {
+        let read_stream = match name {
+            Some(_name) => Self {
+                read_stream: ReadStream::new_with_name(_name),
+            },
+            None => Self {
+                read_stream: ReadStream::new(),
+            },
+        };
+        obj.init(read_stream);
     }
 
     fn is_closed(&self) -> bool {

@@ -112,9 +112,11 @@ impl Graph {
     {
         let stream_id = ingest_stream.get_id();
         let node_id = ingest_stream.get_node_id();
+        let stream_name = ingest_stream.get_name();
         slog::debug!(
             crate::TERMINAL_LOGGER,
-            "Adding ingest stream (ID: {}, Driver ID: {}) to the graph.",
+            "Adding ingest stream {} (ID: {}, Driver ID: {}) to the graph.",
+            stream_name,
             stream_id,
             node_id
         );
@@ -139,16 +141,18 @@ impl Graph {
     {
         let stream_id = extract_stream.get_id();
         let node_id = extract_stream.get_node_id();
+        let stream_name = extract_stream.get_name();
         slog::debug!(
             crate::TERMINAL_LOGGER,
-            "Adding extract stream (ID: {}, Driver ID: {}) to the graph.",
+            "Adding extract stream {} (ID: {}, Driver ID: {}) to the graph.",
+            stream_name,
             stream_id,
             node_id
         );
         // Add stream to driver
         let driver = self
             .drivers
-            .entry(extract_stream.get_node_id())
+            .entry(node_id)
             .or_insert_with(|| DriverMetadata::new(node_id));
         driver.add_extract_stream(stream_id, setup_hook);
         // Add channel to stream

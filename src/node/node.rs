@@ -364,10 +364,18 @@ impl Node {
         // Assign values used later to avoid lifetime errors.
         let num_nodes = self.config.data_addresses.len();
         // Create TCPStreams between all node pairs.
-        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: Creating control connections.", self.id);
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Node {}: Creating control connections.",
+            self.id
+        );
         let control_streams =
             communication::create_tcp_streams(self.config.control_addresses.clone(), self.id).await;
-        slog::debug!(crate::TERMINAL_LOGGER, "Node {}: Creating data connections.", self.id);
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Node {}: Creating data connections.",
+            self.id
+        );
         let data_streams =
             communication::create_tcp_streams(self.config.data_addresses.clone(), self.id).await;
         let (control_senders, control_receivers) =
@@ -377,9 +385,19 @@ impl Node {
         let mut shutdown_rx = self.shutdown_rx.take().unwrap();
         let shutdown_fut = shutdown_rx.recv();
         // Execute threads that send data to other nodes.
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Node {}: Executing senders.",
+            self.id
+        );
         let control_senders_fut = senders::run_control_senders(control_senders);
         let senders_fut = senders::run_senders(senders);
         // Execute threads that receive data from other nodes.
+        slog::debug!(
+            crate::TERMINAL_LOGGER,
+            "Node {}: Executing receivers.",
+            self.id
+        );
         let control_recvs_fut = receivers::run_control_receivers(control_receivers);
         let recvs_fut = receivers::run_receivers(receivers);
         // Execute operators.

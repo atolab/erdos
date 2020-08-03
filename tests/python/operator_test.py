@@ -58,11 +58,12 @@ def test_input_receiver_map():
     map_config = erdos.OperatorConfig(name="map_operator",
                                       flow_watermarks=True)
 
+    ingest_stream = erdos.IngestStream(_name="TEST STREAM")
     input_stream = erdos.connect(InputGenOp, input_config, [])
     [
         mapped_stream,
     ] = erdos.connect(MapOperator, map_config, input_stream)
-    mapped_stream = erdos.ExtractStream(mapped_stream)
+    mapped_stream = erdos.ExtractStream(mapped_stream, _name="EXTRACT_STREAM")
 
     erdos.run_async()
     for i in range(10):
