@@ -62,43 +62,49 @@ macro_rules! make_operator_executor {
         )*
         // After: $rs is an identifier pointing to a read stream's StreamId
         // $ws is an identifier pointing to a write stream's StreamId
-        move |channel_manager: Arc<Mutex<ChannelManager>>, control_sender: UnboundedSender<ControlMessage>, mut control_receiver: UnboundedReceiver<ControlMessage>| {
+        move |channel_manager: Arc<async_std::sync::Mutex<ChannelManager>>, control_sender: Sender<ControlMessage>, mut control_receiver: Receiver<ControlMessage>| {
             let mut op_ex_streams: Vec<Box<dyn OperatorExecutorStreamT>> = Vec::new();
             // Before: $rs is an identifier pointing to a read stream's StreamId
             // $ws is an identifier pointing to a write stream's StreamId
-            $(
-                let $rs = {
-                    let recv_endpoint = channel_manager.lock().unwrap().take_recv_endpoint($rs).unwrap();
-                    let read_stream = ReadStream::from(InternalReadStream::from_endpoint(recv_endpoint, $rs));
-                    op_ex_streams.push(
-                        Box::new(OperatorExecutorStream::from(&read_stream))
-                    );
-                    read_stream
-                };
-            )*
-            $(
-                let $ws = {
-                    let send_endpoints = channel_manager.lock().unwrap().get_send_endpoints($ws).unwrap();
-                    WriteStream::from_endpoints(send_endpoints, $ws)
-                };
-            )*
-            // After: $rs is an identifier pointing to ReadStream
-            // $ws is an identifier pointing to WriteStream
-            let mut config = $config.clone();
-            config.node_id = channel_manager.lock().unwrap().node_id();
-            let flow_watermarks = config.flow_watermarks;
-            // TODO: set operator name?
-            let mut op = $crate::make_operator!($t, config.clone(), ($($rs),*), ($($ws),*));
-            // Pass on watermarks
-            if flow_watermarks {
-                $crate::flow_watermarks!(($($rs),*), ($($ws),*));
-            }
-            // Notify node that operator is done setting up
-            if let Err(e) = control_sender.send(ControlMessage::OperatorInitialized(config.id)) {
-                panic!("Error sending OperatorInitialized message to control handler: {:?}", e);
-            }
-            let mut op_executor = OperatorExecutor::new(op, config, op_ex_streams, control_receiver);
-            op_executor
+            async_std::task::block_on(
+                async {
+                    $(
+                        let $rs = {
+                            let recv_endpoint = channel_manager.lock().await.take_recv_endpoint($rs).unwrap();
+                            let read_stream = ReadStream::from(InternalReadStream::from_endpoint(recv_endpoint, $rs));
+                            op_ex_streams.push(
+                                Box::new(OperatorExecutorStream::from(&read_stream))
+                            );
+                            read_stream
+                        };
+                    )*
+                    $(
+                        let $ws = {
+                            let send_endpoints = channel_manager.lock().await.get_send_endpoints($ws).unwrap();
+                            WriteStream::from_endpoints(send_endpoints, $ws)
+                        };
+                    )*
+                    // After: $rs is an identifier pointing to ReadStream
+                    // $ws is an identifier pointing to WriteStream
+                    let mut config = $config.clone();
+                    config.node_id = channel_manager.lock().await.node_id();
+                    let flow_watermarks = config.flow_watermarks;
+                    // TODO: set operator name?
+                    let mut op = $crate::make_operator!($t, config.clone(), ($($rs),*), ($($ws),*));
+                    // Pass on watermarks
+                    if flow_watermarks {
+                        $crate::flow_watermarks!(($($rs),*), ($($ws),*));
+                    }
+                    // Notify node that operator is done setting up
+
+                    if let Err(e) = control_sender.send(ControlMessage::OperatorInitialized(config.id)).await  {
+                        panic!("Error sending OperatorInitialized message to control handler: {:?}", e);
+                    }
+                    let mut op_executor = OperatorExecutor::new(op, config, op_ex_streams, control_receiver);
+                    op_executor
+                }
+            )
+
         }
     }};
 }
@@ -113,12 +119,13 @@ macro_rules! imports {
         use std::{
             cell::RefCell,
             rc::Rc,
-            sync::{Arc, Mutex},
+            sync::{Arc},
             thread,
             time::Duration,
         };
         use $crate::slog;
-        use $crate::tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+        use $crate::async_std::channel::{Receiver, Sender};
+        use $crate::async_std::sync::Mutex;
         use $crate::{
             self,
             communication::ControlMessage,

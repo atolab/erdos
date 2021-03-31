@@ -1,15 +1,22 @@
 use futures::{future, stream::SplitSink};
 use futures_util::sink::SinkExt;
-use std::sync::Arc;
-use tokio::{
-    self,
-    net::TcpStream,
-    sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-        Mutex,
-    },
-};
-use tokio_util::codec::Framed;
+use std::sync::{Arc};
+// use tokio::{
+//     self,
+//     net::TcpStream,
+//     sync::{
+//         mpsc::{self, UnboundedReceiver, UnboundedSender},
+//         Mutex,
+//     },
+// };
+// use tokio_util::codec::Framed;
+
+// Replacing tokio with async_std equivalents
+// use async_std::sync::Arc;
+use async_std::channel::{self, Sender, Receiver};
+use async_std::sync::Mutex;
+use async_std::net::TcpStream;
+use futures_codec::Framed;
 
 use crate::communication::{
     CommunicationError, ControlMessage, ControlMessageCodec, ControlMessageHandler,
@@ -28,11 +35,11 @@ pub(crate) struct DataSender {
     /// Framed TCP write sink.
     sink: SplitSink<Framed<TcpStream, MessageCodec>, InterProcessMessage>,
     /// Tokio channel receiver on which to receive data from worker threads.
-    rx: UnboundedReceiver<InterProcessMessage>,
+    rx: Receiver<InterProcessMessage>,
     /// Tokio channel sender to `ControlMessageHandler`.
-    control_tx: UnboundedSender<ControlMessage>,
+    control_tx: Sender<ControlMessage>,
     /// Tokio channel receiver from `ControlMessageHandler`.
-    control_rx: UnboundedReceiver<ControlMessage>,
+    control_rx: Receiver<ControlMessage>,
 }
 
 impl DataSender {
@@ -43,11 +50,11 @@ impl DataSender {
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
         // Create a channel for this stream.
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = channel::unbounded();
         // Add entry in the shared state map.
         channels_to_senders.lock().await.add_sender(node_id, tx);
         // Set up control channel.
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = channel::unbounded();
         control_handler.add_channel_to_data_sender(node_id, control_tx);
         Self {
             node_id,
@@ -62,16 +69,17 @@ impl DataSender {
         // Notify [`ControlMessageHandler`] that sender is initialized.
         self.control_tx
             .send(ControlMessage::DataSenderInitialized(self.node_id))
+            .await
             .map_err(CommunicationError::from)?;
         // TODO: listen on control_rx?
         loop {
             match self.rx.recv().await {
-                Some(msg) => {
+                Ok(msg) => {
                     if let Err(e) = self.sink.send(msg).await.map_err(CommunicationError::from) {
                         return Err(e);
                     }
                 }
-                None => return Err(CommunicationError::Disconnected),
+                Err(_) => return Err(CommunicationError::Disconnected),
             }
         }
     }
@@ -87,7 +95,7 @@ pub(crate) async fn run_senders(senders: Vec<DataSender>) -> Result<(), Communic
     future::join_all(
         senders
             .into_iter()
-            .map(|mut sender| tokio::spawn(async move { sender.run().await })),
+            .map(|mut sender| async_std::task::spawn(async move { sender.run().await })),
     )
     .await;
     Ok(())
@@ -101,11 +109,11 @@ pub(crate) struct ControlSender {
     /// Framed TCP write sink.
     sink: SplitSink<Framed<TcpStream, ControlMessageCodec>, ControlMessage>,
     /// Tokio channel receiver on which to receive data from worker threads.
-    rx: UnboundedReceiver<ControlMessage>,
+    rx: Receiver<ControlMessage>,
     /// Tokio channel sender to `ControlMessageHandler`.
-    control_tx: UnboundedSender<ControlMessage>,
+    control_tx: Sender<ControlMessage>,
     /// Channel receiver for control messages intended for this `ControlSender`.
-    control_rx: UnboundedReceiver<ControlMessage>,
+    control_rx: Receiver<ControlMessage>,
 }
 
 impl ControlSender {
@@ -115,10 +123,10 @@ impl ControlSender {
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
         // Set up channel to other node.
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = channel::unbounded();
         control_handler.add_channel_to_node(node_id, tx);
         // Set up control channel.
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = channel::unbounded();
         control_handler.add_channel_to_control_sender(node_id, control_tx);
         Self {
             node_id,
@@ -133,16 +141,17 @@ impl ControlSender {
         // Notify `ControlMessageHandler` that sender is initialized.
         self.control_tx
             .send(ControlMessage::ControlSenderInitialized(self.node_id))
+            .await
             .map_err(CommunicationError::from)?;
         // TODO: listen on control_rx
         loop {
             match self.rx.recv().await {
-                Some(msg) => {
+                Ok(msg) => {
                     if let Err(e) = self.sink.send(msg).await.map_err(CommunicationError::from) {
                         return Err(e);
                     }
                 }
-                None => {
+                Err(_) => {
                     return Err(CommunicationError::Disconnected);
                 }
             }

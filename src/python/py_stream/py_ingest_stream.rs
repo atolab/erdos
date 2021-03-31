@@ -36,12 +36,14 @@ impl PyIngestStream {
     }
 
     fn send(&mut self, msg: &PyMessage) -> PyResult<()> {
-        self.ingest_stream.send(Message::from(msg)).map_err(|e| {
-            exceptions::Exception::py_err(format!(
-                "Error sending message on ingest stream {}: {:?}",
-                self.ingest_stream.get_id(),
-                e
-            ))
+        async_std::task::block_on(async {
+            self.ingest_stream.send(Message::from(msg)).await.map_err(|e| {
+                exceptions::Exception::py_err(format!(
+                    "Error sending message on ingest stream {}: {:?}",
+                    self.ingest_stream.get_id(),
+                    e
+                ))
+            })
         })
     }
 

@@ -30,7 +30,7 @@ default_handler.setFormatter(formatter)
 
 logger = logging.getLogger(__name__)
 logger.addHandler(default_handler)
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.NOTSET)
 logger.propagate = False
 
 

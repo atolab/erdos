@@ -4,6 +4,7 @@ use crate::dataflow::{
 };
 use serde::Deserialize;
 use std::marker::PhantomData;
+use async_std::task;
 
 /// An operator that maps an incoming stream of type D1 to a stream of type D2 using the provided
 /// function.
@@ -80,7 +81,7 @@ impl<'a, D1: Data, D2: Data + Deserialize<'a>> MapOperator<D1, D2> {
     /// * `msg` - The incoming message on the input stream.
     /// * `output_stream` - A handle to the output stream to write the output to.
     /// * `map_function` - A reference to the function to invoke for the message.
-    fn on_data_callback<F: 'static + Clone + Fn(&D1) -> D2>(
+     fn on_data_callback<F: 'static + Clone + Fn(&D1) -> D2>(
         t: &Timestamp,
         msg: &D1,
         output_stream: &mut WriteStream<D2>,
@@ -88,11 +89,12 @@ impl<'a, D1: Data, D2: Data + Deserialize<'a>> MapOperator<D1, D2> {
     ) {
         let result: D2 = map_function(msg);
         output_stream
-            .send(Message::new_message(t.clone(), result))
-            .expect(&format!(
-                "Map operator unable to send message on stream {}",
-                output_stream.get_id()
-            ));
+        .send(Message::new_message(t.clone(), result))
+        .expect(&format!(
+            "Map operator unable to send message on stream {}",
+            output_stream.get_id()
+        ));
+
     }
 }
 

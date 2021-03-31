@@ -1,9 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 
+use async_std::sync::Mutex;
 use pyo3::{exceptions, prelude::*, types::*};
 use slog;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+// use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use async_std::channel::{Sender, Receiver};
 use crate::{
     communication::ControlMessage,
     dataflow::{
@@ -123,124 +125,130 @@ fn internal(_py: Python, m: &PyModule) -> PyResult<()> {
 
         let operator_runner =
             move |channel_manager: Arc<Mutex<ChannelManager>>,
-                  control_sender: UnboundedSender<ControlMessage>,
-                  control_receiver: UnboundedReceiver<ControlMessage>| {
-                // Create python streams from endpoints
+                  control_sender: Sender<ControlMessage>,
+                  control_receiver: Receiver<ControlMessage>| {
+
+                async_std::task::block_on(async {
+                    // Create python streams from endpoints
                 let py_read_streams: Vec<PyReadStream> = read_stream_ids_clone
-                    .iter()
-                    .map(|&id| {
-                        let recv_endpoint = channel_manager
-                            .lock()
-                            .unwrap()
-                            .take_recv_endpoint(id)
-                            .unwrap();
-                        PyReadStream::from(ReadStream::from(InternalReadStream::from_endpoint(
-                            recv_endpoint,
-                            id,
-                        )))
-                    })
-                    .collect();
-                let py_write_streams: Vec<PyWriteStream> = write_stream_ids_clone
-                    .iter()
-                    .map(|&id| {
-                        let send_endpoints = channel_manager
-                            .lock()
-                            .unwrap()
-                            .get_send_endpoints(id)
-                            .unwrap();
-                        PyWriteStream::from(WriteStream::from_endpoints(send_endpoints, id))
-                    })
-                    .collect();
-                slog::debug!(
-                    crate::TERMINAL_LOGGER,
-                    "Finished creating python versions of {} read streams \
-                    and {} write streams for {}.",
-                    py_read_streams.len(),
-                    py_write_streams.len(),
-                    op_name
-                );
+                .iter()
+                .map(|&id| {
+                    let recv_endpoint = async_std::task::block_on(async {
+                        channel_manager
+                        .lock()
+                        .await
+                        .take_recv_endpoint(id)
+                        .unwrap()
+                    });
+                    PyReadStream::from(ReadStream::from(InternalReadStream::from_endpoint(
+                        recv_endpoint,
+                        id,
+                    )))
+                })
+                .collect();
+            let py_write_streams: Vec<PyWriteStream> = write_stream_ids_clone
+                .iter()
+                .map(|&id| {
+                    let send_endpoints = async_std::task::block_on(async {
+                        channel_manager
+                        .lock()
+                        .await
+                        .get_send_endpoints(id)
+                        .unwrap()
+                    });
+                    PyWriteStream::from(WriteStream::from_endpoints(send_endpoints, id))
+                })
+                .collect();
+            slog::debug!(
+                crate::TERMINAL_LOGGER,
+                "Finished creating python versions of {} read streams \
+                and {} write streams for {}.",
+                py_read_streams.len(),
+                py_write_streams.len(),
+                op_name
+            );
 
-                // Create read and write stream IDs in string.
-                let read_stream_uuids: Vec<String> = read_stream_ids_clone
-                    .iter()
-                    .map(|&id| format!("{}", id))
-                    .collect();
-                let write_stream_uuids: Vec<String> = write_stream_ids_clone
-                    .iter()
-                    .map(|&id| format!("{}", id))
-                    .collect();
+            // Create read and write stream IDs in string.
+            let read_stream_uuids: Vec<String> = read_stream_ids_clone
+                .iter()
+                .map(|&id| format!("{}", id))
+                .collect();
+            let write_stream_uuids: Vec<String> = write_stream_ids_clone
+                .iter()
+                .map(|&id| format!("{}", id))
+                .collect();
 
-                // Add the flow watermark callback, if applicable.
-                if flow_watermarks {
-                    flow_watermarks_py(&py_read_streams, &py_write_streams);
-                }
+            // Add the flow watermark callback, if applicable.
+            if flow_watermarks {
+                flow_watermarks_py(&py_read_streams, &py_write_streams);
+            }
 
-                // Create operator executor streams from read streams
-                let mut op_ex_streams: Vec<Box<dyn OperatorExecutorStreamT>> = Vec::new();
-                for py_read_stream in py_read_streams.iter() {
-                    op_ex_streams.push(Box::new(OperatorExecutorStream::from(
-                        &py_read_stream.read_stream,
-                    )));
-                }
+            // Create operator executor streams from read streams
+            let mut op_ex_streams: Vec<Box<dyn OperatorExecutorStreamT>> = Vec::new();
+            for py_read_stream in py_read_streams.iter() {
+                op_ex_streams.push(Box::new(OperatorExecutorStream::from(
+                    &py_read_stream.read_stream,
+                )));
+            }
 
-                // Instantiate and run the operator in Python
-                slog::debug!(
-                    crate::TERMINAL_LOGGER,
-                    "Instantiating the operator {}.",
-                    op_name
-                );
-                let gil = Python::acquire_gil();
-                let py = gil.python();
-                let locals = PyDict::new(py);
-                let py_read_streams: Vec<PyRef<PyReadStream>> = py_read_streams
-                    .into_iter()
-                    .map(|rs| PyRef::new(py, rs).unwrap())
-                    .collect();
-                let py_write_streams: Vec<PyRef<PyWriteStream>> = py_write_streams
-                    .into_iter()
-                    .map(|ws| PyRef::new(py, ws).unwrap())
-                    .collect();
-                locals
-                    .set_item("Operator", py_type_arc.clone_ref(py))
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("py_read_streams", py_read_streams)
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("read_stream_ids", read_stream_uuids)
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("py_write_streams", py_write_streams)
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("write_stream_ids", write_stream_uuids)
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("op_id", format!("{}", op_id))
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("config", py_config_arc.clone_ref(py))
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("args", args_arc.clone_ref(py))
-                    .err()
-                    .map(|e| e.print(py));
-                locals
-                    .set_item("kwargs", kwargs_arc.clone_ref(py))
-                    .err()
-                    .map(|e| e.print(py));
-                // NOTE: Do not use list comprehension in py.run because it causes a crashes the
-                // Python processes. We do not currently know why this is the case.
-                // Initialize operator
-                let py_result = py.run(
-                    r#"
+            // Instantiate and run the operator in Python
+            slog::debug!(
+                crate::TERMINAL_LOGGER,
+                "Instantiating the operator {}.",
+                op_name
+            );
+            let gil = Python::acquire_gil();
+            let py = gil.python();
+            let locals = PyDict::new(py);
+            let py_read_streams: Vec<PyRef<PyReadStream>> = py_read_streams
+                .into_iter()
+                .map(|rs| PyRef::new(py, rs).unwrap())
+                .collect();
+            let py_write_streams: Vec<PyRef<PyWriteStream>> = py_write_streams
+                .into_iter()
+                .map(|ws| PyRef::new(py, ws).unwrap())
+                .collect();
+            locals
+                .set_item("Operator", py_type_arc.clone_ref(py))
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("py_read_streams", py_read_streams)
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("read_stream_ids", read_stream_uuids)
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("py_write_streams", py_write_streams)
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("write_stream_ids", write_stream_uuids)
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("op_id", format!("{}", op_id))
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("config", py_config_arc.clone_ref(py))
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("args", args_arc.clone_ref(py))
+                .err()
+                .map(|e| e.print(py));
+            locals
+                .set_item("kwargs", kwargs_arc.clone_ref(py))
+                .err()
+                .map(|e| e.print(py));
+            // NOTE: Do not use list comprehension in py.run because it causes a crashes the
+            // Python processes. We do not currently know why this is the case.
+            // Initialize operator
+            let py_result = py.run(
+                r#"
 import uuid
 import inspect
 
@@ -272,40 +280,42 @@ trace_logger_name = "{}-profile".format(type(operator) if config.name is None el
 operator._trace_event_logger = erdos.utils.setup_trace_logging(trace_logger_name, config.profile_file_name)
 operator.__init__(*read_streams, *write_streams, *args, **kwargs)
 "#,
-                    None,
-                    Some(&locals),
+                None,
+                Some(&locals),
+            );
+            if let Err(e) = py_result {
+                e.print(py)
+            }
+            // Notify node that operator is done setting up
+            if let Err(e) = control_sender.send(ControlMessage::OperatorInitialized(op_id)).await {
+                slog::error!(
+                    crate::TERMINAL_LOGGER,
+                    "Error sending OperatorInitialized message to control handler: {:?}",
+                    e
                 );
-                if let Err(e) = py_result {
-                    e.print(py)
-                }
-                // Notify node that operator is done setting up
-                if let Err(e) = control_sender.send(ControlMessage::OperatorInitialized(op_id)) {
-                    slog::error!(
-                        crate::TERMINAL_LOGGER,
-                        "Error sending OperatorInitialized message to control handler: {:?}",
-                        e
-                    );
-                }
+            }
 
-                let operator_obj = py
-                    .eval("operator", None, Some(&locals))
-                    .unwrap()
-                    .to_object(py);
-                let operator_arc = Arc::new(operator_obj);
+            let operator_obj = py
+                .eval("operator", None, Some(&locals))
+                .unwrap()
+                .to_object(py);
+            let operator_arc = Arc::new(operator_obj);
 
-                let mut config: OperatorConfig<()> = OperatorConfig::new();
-                config.name = name_clone.clone();
-                config.id = op_id;
-                config.flow_watermarks = flow_watermarks;
-                config.node_id = node_id;
-                OperatorExecutor::new(
-                    PyOperator {
-                        operator: operator_arc,
-                    },
-                    config,
-                    op_ex_streams,
-                    control_receiver,
-                )
+            let mut config: OperatorConfig<()> = OperatorConfig::new();
+            config.name = name_clone.clone();
+            config.id = op_id;
+            config.flow_watermarks = flow_watermarks;
+            config.node_id = node_id;
+            OperatorExecutor::new(
+                PyOperator {
+                    operator: operator_arc,
+                },
+                config,
+                op_ex_streams,
+                control_receiver,
+            )
+                })
+
             };
 
         default_graph::add_operator(

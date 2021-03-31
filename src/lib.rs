@@ -158,7 +158,8 @@
 #[doc(hidden)]
 pub use ::slog;
 #[doc(hidden)]
-pub use ::tokio;
+// pub use ::tokio;
+pub use ::async_std;
 
 // Libraries used in this file.
 use std::{cell::RefCell, fmt};

@@ -12,6 +12,8 @@ use crate::dataflow::{
     WriteStream,
 };
 
+use async_std::task;
+
 /// A structure that stores the state associated with a stream for the JoinOperator, and provides
 /// the associated functions for mutation of the data.
 /// Uses a ConcurrentHashMap to store the messages and a min-heap to ensure easy retrieval of the
@@ -179,8 +181,9 @@ impl<'a, D1: Data, D2: Data, D3: Data + Deserialize<'a>> JoinOperator<D1, D2, D3
 
         // Send the result on the write stream.
         write_stream
-            .send(Message::new_message(t.clone(), result_t))
-            .expect("JoinOperator: error sending on write stream");
+        .send(Message::new_message(t.clone(), result_t))
+        .expect("JoinOperator: error sending on write stream");
+
 
         // Garbage collect all the data upto and including this timestamp.
         left_state.clean_state(t);

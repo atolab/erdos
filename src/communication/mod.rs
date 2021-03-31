@@ -1,7 +1,7 @@
 use std::{
     fmt::Debug,
     net::SocketAddr,
-    sync::Arc,
+    // sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -10,12 +10,18 @@ use bytes::BytesMut;
 use futures::future;
 use serde::{Deserialize, Serialize};
 use slog;
-use tokio::{
-    io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
-    prelude::*,
-    time::delay_for,
-};
+// use tokio::{
+//     io::AsyncWriteExt,
+//     net::{TcpListener, TcpStream},
+//     prelude::*,
+//     time::delay_for,
+// };
+
+use async_std::sync::Arc;
+use async_std::net::{TcpListener, TcpStream};
+use async_std::prelude::*;
+use async_std::task::sleep;
+use async_std::io::prelude::WriteExt;
 
 use crate::{dataflow::stream::StreamId, node::NodeId, OperatorId};
 
@@ -191,7 +197,7 @@ async fn connect_to_node(
                     last_err_msg_time = now;
                 }
                 // Wait a bit until it tries to connect again.
-                delay_for(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(100)).await;
             }
         }
     }

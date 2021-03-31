@@ -1,5 +1,7 @@
 use std::io;
-use tokio::sync::mpsc;
+// use tokio::sync::mpsc;
+
+use async_std::channel;
 
 /// Error raised by the communication layer.
 #[derive(Debug)]
@@ -18,6 +20,7 @@ pub enum CommunicationError {
     BincodeError(bincode::Error),
     /// Failed to read/write data from/to the TCP stream.
     IoError(io::Error),
+    UnknownError(String),
 }
 
 impl From<bincode::Error> for CommunicationError {
@@ -38,17 +41,17 @@ impl<T> From<std::sync::mpsc::SendError<T>> for CommunicationError {
     }
 }
 
-impl<T> From<mpsc::error::SendError<T>> for CommunicationError {
-    fn from(_e: mpsc::error::SendError<T>) -> Self {
+impl<T> From<channel::SendError<T>> for CommunicationError {
+    fn from(_e: channel::SendError<T>) -> Self {
         CommunicationError::Disconnected
     }
 }
 
-impl<T> From<mpsc::error::TrySendError<T>> for CommunicationError {
-    fn from(e: mpsc::error::TrySendError<T>) -> Self {
+impl<T> From<channel::TrySendError<T>> for CommunicationError {
+    fn from(e: channel::TrySendError<T>) -> Self {
         match e {
-            mpsc::error::TrySendError::Closed(_) => CommunicationError::Disconnected,
-            mpsc::error::TrySendError::Full(_) => CommunicationError::NoCapacity,
+            channel::TrySendError::Closed(_) => CommunicationError::Disconnected,
+            channel::TrySendError::Full(_) => CommunicationError::NoCapacity,
         }
     }
 }
@@ -59,6 +62,13 @@ impl From<CodecError> for CommunicationError {
             CodecError::IoError(e) => CommunicationError::IoError(e),
             CodecError::BincodeError(e) => CommunicationError::BincodeError(e),
         }
+    }
+}
+
+
+impl From<std::string::String> for CommunicationError {
+    fn from(e: std::string::String) -> Self {
+        CommunicationError::UnknownError(e)
     }
 }
 
@@ -93,11 +103,11 @@ pub enum TryRecvError {
     BincodeError(bincode::Error),
 }
 
-impl From<mpsc::error::TryRecvError> for TryRecvError {
-    fn from(e: mpsc::error::TryRecvError) -> Self {
+impl From<channel::TryRecvError> for TryRecvError {
+    fn from(e: channel::TryRecvError) -> Self {
         match e {
-            mpsc::error::TryRecvError::Closed => TryRecvError::Disconnected,
-            mpsc::error::TryRecvError::Empty => TryRecvError::Empty,
+            channel::TryRecvError::Closed => TryRecvError::Disconnected,
+            channel::TryRecvError::Empty => TryRecvError::Empty,
         }
     }
 }

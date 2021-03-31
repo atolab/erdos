@@ -1,10 +1,13 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::Duration,
 };
 
 use serde::Deserialize;
+use async_std::task;
+use async_std::sync::Mutex;
+
 
 use crate::{
     dataflow::{graph::default_graph, Data, Message},
@@ -110,20 +113,20 @@ where
         let write_stream_option_copy = Arc::clone(&ingest_stream.write_stream_option);
 
         // Sets up self.write_stream_option using channel_manager
-        let setup_hook = move |channel_manager: Arc<Mutex<ChannelManager>>| match channel_manager
-            .lock()
-            .unwrap()
-            .get_send_endpoints(id)
-        {
-            Ok(send_endpoints) => {
-                let write_stream = WriteStream::from_endpoints(send_endpoints, id);
-                write_stream_option_copy
-                    .lock()
-                    .unwrap()
-                    .replace(write_stream);
+        let setup_hook = move |channel_manager: Arc<Mutex<ChannelManager>>| {
+            async_std::task::block_on(async {
+                match channel_manager.lock().await.get_send_endpoints(id)  {
+                Ok(send_endpoints) => {
+                    let write_stream = WriteStream::from_endpoints(send_endpoints, id);
+                    write_stream_option_copy
+                        .lock()
+                        .await
+                        .replace(write_stream);
+                }
+                Err(msg) => panic!("Unable to set up IngestStream {}: {}", id, msg),
+                }
             }
-            Err(msg) => panic!("Unable to set up IngestStream {}: {}", id, msg),
-        };
+        )};
 
         default_graph::add_ingest_stream(&ingest_stream, setup_hook);
         ingest_stream
@@ -149,23 +152,25 @@ where
     /// Returns `true` if a top watermark message was received or the [`IngestStream`] failed to
     /// set up.
     pub fn is_closed(&self) -> bool {
-        self.write_stream_option
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(WriteStream::is_closed)
-            .unwrap_or(true)
+        async_std::task::block_on(async {
+                self.write_stream_option
+                .lock()
+                .await
+                .as_ref()
+                .map(WriteStream::is_closed)
+                .unwrap_or(true)
+        })
     }
 
     /// Sends data on the stream.
     ///
     /// # Arguments
     /// * `msg` - The message to be sent on the stream.
-    pub fn send(&mut self, msg: Message<D>) -> Result<(), WriteStreamError> {
+    pub async fn send(&mut self, msg: Message<D>) -> Result<(), WriteStreamError> {
         if !self.is_closed() {
             loop {
                 {
-                    if let Some(write_stream) = self.write_stream_option.lock().unwrap().as_mut() {
+                    if let Some(write_stream) = self.write_stream_option.lock().await.as_mut() {
                         let res = write_stream.send(msg);
                         return res;
                     }
@@ -183,6 +188,7 @@ where
             return Err(WriteStreamError::Closed);
         }
     }
+
 }
 
 impl<D> WriteStreamT<D> for IngestStream<D>
@@ -191,6 +197,6 @@ where
 {
     /// Blocks until write stream is available
     fn send(&mut self, msg: Message<D>) -> Result<(), WriteStreamError> {
-        self.send(msg)
+        Ok(task::block_on( async { self.send(msg).await })?)
     }
 }

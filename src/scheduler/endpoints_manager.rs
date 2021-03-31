@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use tokio::sync::mpsc::UnboundedSender;
+// use tokio::sync::mpsc::UnboundedSender;
+
+use async_std::channel::Sender;
 
 use crate::{
     communication::{InterProcessMessage, PusherT},
@@ -15,7 +17,7 @@ pub struct ChannelsToReceivers {
     // We do not use a tokio::mpsc::UnboundedSender because that only provides a blocking API.
     // It does not allow us to just check if the channel has a new message. We need this API in
     // the receivers, which regularly check if there are new pushers available.
-    senders: Vec<UnboundedSender<(StreamId, Box<dyn PusherT>)>>,
+    senders: Vec<Sender<(StreamId, Box<dyn PusherT>)>>,
 }
 
 impl ChannelsToReceivers {
@@ -26,17 +28,17 @@ impl ChannelsToReceivers {
     }
 
     /// Adds a `mpsc::Sender` to a new receiver thread.
-    pub fn add_sender(&mut self, sender: UnboundedSender<(StreamId, Box<dyn PusherT>)>) {
+    pub fn add_sender(&mut self, sender: Sender<(StreamId, Box<dyn PusherT>)>) {
         self.senders.push(sender);
     }
 
     /// Updates the receivers about the existance of a new operator.
     ///
     /// It sends a `PusherT` to message on all receiving threads.
-    pub fn send(&mut self, stream_id: StreamId, pusher: Box<dyn PusherT>) {
+    pub async fn send(&mut self, stream_id: StreamId, pusher: Box<dyn PusherT>) {
         for sender in self.senders.iter_mut() {
             let msg = (stream_id.clone(), pusher.clone());
-            sender.send(msg).unwrap();
+            sender.send(msg).await.unwrap();
         }
     }
 }
@@ -44,7 +46,7 @@ impl ChannelsToReceivers {
 /// Wrapper used to store mappings between node ids and `mpsc::UnboundedSender` to sender threads.
 pub struct ChannelsToSenders {
     /// The ith sender corresponds to a TCP connection to the ith node.
-    senders: HashMap<NodeId, UnboundedSender<InterProcessMessage>>,
+    senders: HashMap<NodeId, Sender<InterProcessMessage>>,
 }
 
 impl ChannelsToSenders {
@@ -58,7 +60,7 @@ impl ChannelsToSenders {
     pub fn add_sender(
         &mut self,
         node_id: NodeId,
-        sender: tokio::sync::mpsc::UnboundedSender<InterProcessMessage>,
+        sender: async_std::channel::Sender<InterProcessMessage>,
     ) {
         self.senders.insert(node_id, sender);
     }
@@ -67,7 +69,7 @@ impl ChannelsToSenders {
     pub fn clone_channel(
         &self,
         node_id: NodeId,
-    ) -> Option<tokio::sync::mpsc::UnboundedSender<InterProcessMessage>> {
+    ) -> Option<async_std::channel::Sender<InterProcessMessage>> {
         self.senders.get(&node_id).map(|c| c.clone())
     }
 }

@@ -1,10 +1,11 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc},
     thread,
     time::Duration,
 };
 
 use serde::Deserialize;
+use async_std::sync::Mutex;
 
 use crate::{
     dataflow::{graph::default_graph, Data, Message},
@@ -80,6 +81,7 @@ where
     channel_manager_option: Arc<Mutex<Option<Arc<Mutex<ChannelManager>>>>>,
 }
 
+
 impl<D> ExtractStream<D>
 where
     for<'a> D: Data + Deserialize<'a>,
@@ -141,10 +143,14 @@ where
 
         // Sets up self.read_stream_option using channel_manager
         let setup_hook = move |channel_manager: Arc<Mutex<ChannelManager>>| {
-            channel_manager_option_copy
+
+                async_std::task::block_on(async {
+                    channel_manager_option_copy
                 .lock()
-                .unwrap()
+                .await
                 .replace(channel_manager);
+                })
+
         };
 
         default_graph::add_extract_stream(&extract_stream, setup_hook);
@@ -182,33 +188,39 @@ where
     /// Returns the Message available on the [`ReadStream`], or an [`Empty`](TryReadError::Empty)
     /// if no message is available.
     pub fn try_read(&mut self) -> Result<Message<D>, TryReadError> {
-        if let Some(read_stream) = &self.read_stream_option {
-            read_stream.try_read()
-        } else {
-            // Try to setup read stream
-            if let Some(channel_manager) = &*self.channel_manager_option.lock().unwrap() {
-                match channel_manager.lock().unwrap().take_recv_endpoint(self.id) {
-                    Ok(recv_endpoint) => {
-                        let read_stream = ReadStream::from(InternalReadStream::from_endpoint(
-                            recv_endpoint,
-                            self.id,
-                        ));
-                        let result = read_stream.try_read();
-                        self.read_stream_option.replace(read_stream);
-                        return result;
+
+        async_std::task::block_on(async {
+            if let Some(read_stream) = &self.read_stream_option {
+                read_stream.try_read()
+            } else {
+                // Try to setup read stream
+                if let Some(channel_manager) = &*self.channel_manager_option.lock().await {
+                    match channel_manager.lock().await.take_recv_endpoint(self.id) {
+                        Ok(recv_endpoint) => {
+                            let read_stream = ReadStream::from(InternalReadStream::from_endpoint(
+                                recv_endpoint,
+                                self.id,
+                            ));
+                            let result = read_stream.try_read();
+                            self.read_stream_option.replace(read_stream);
+                            return result;
+                        }
+                        Err(msg) => slog::error!(
+                            crate::TERMINAL_LOGGER,
+                            "ExtractStream {} (ID: {}): error getting endpoint from \
+                            channel manager \"{}\"",
+                            self.get_name(),
+                            self.get_id(),
+                            msg
+                        ),
                     }
-                    Err(msg) => slog::error!(
-                        crate::TERMINAL_LOGGER,
-                        "ExtractStream {} (ID: {}): error getting endpoint from \
-                        channel manager \"{}\"",
-                        self.get_name(),
-                        self.get_id(),
-                        msg
-                    ),
                 }
+                Err(TryReadError::Disconnected)
             }
-            Err(TryReadError::Disconnected)
-        }
+
+        })
+
+
     }
 
     /// Blocking read from the [`ExtractStream`].

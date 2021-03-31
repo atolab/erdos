@@ -1,21 +1,31 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc},
     thread,
 };
 
+
+use crate::communication::CommunicationError;
 use futures::future;
+use async_std::prelude::*;
 use futures_util::stream::StreamExt;
 use slog;
-use tokio::{
-    net::TcpStream,
-    runtime::Builder,
-    sync::{
-        mpsc::{self, Receiver, Sender, UnboundedReceiver},
-        Mutex,
-    },
-};
-use tokio_util::codec::Framed;
+// use tokio::{
+//     net::TcpStream,
+//     runtime::Builder,
+//     sync::{
+//         mpsc::{self, Receiver, Sender, UnboundedReceiver},
+//         Mutex,
+//     },
+// };
+// use tokio_util::codec::Framed;
+
+use async_std::channel::{self, Sender, Receiver};
+use async_std::sync::{Mutex, Barrier};
+use async_std::net::TcpStream;
+use futures_codec::Framed;
+use async_std::task;
+use futures::join;
 
 use crate::communication::{
     self,
@@ -53,7 +63,7 @@ pub struct Node {
     /// Structure used to send and receive control messages.
     control_handler: ControlMessageHandler,
     /// Used to block `run_async` until setup is complete for the driver to continue running safely.
-    initialized: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    initialized: Arc<(async_std::sync::Mutex<bool>, async_std::sync::Condvar)>,
     /// Channel used to shut down the node.
     shutdown_tx: Sender<()>,
     shutdown_rx: Option<Receiver<()>>,
@@ -64,7 +74,7 @@ impl Node {
     pub fn new(config: Configuration) -> Self {
         let id = config.index;
         let logger = config.logger.clone();
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = channel::bounded(1);
         Self {
             config,
             id,
@@ -72,7 +82,7 @@ impl Node {
             channels_to_receivers: Arc::new(Mutex::new(ChannelsToReceivers::new())),
             channels_to_senders: Arc::new(Mutex::new(ChannelsToSenders::new())),
             control_handler: ControlMessageHandler::new(logger),
-            initialized: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+            initialized: Arc::new((async_std::sync::Mutex::new(false), async_std::sync::Condvar::new())),
             shutdown_tx,
             shutdown_rx: Some(shutdown_rx),
         }
@@ -87,15 +97,21 @@ impl Node {
         if self.dataflow_graph.is_none() {
             self.dataflow_graph = Some(default_graph::clone());
         }
+
         // Build a runtime with n threads.
-        let mut runtime = Builder::new()
-            .threaded_scheduler()
-            .core_threads(self.config.num_worker_threads)
-            .thread_name(format!("node-{}", self.id))
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(self.async_run());
+        // let mut runtime = Builder::new()
+        //     .threaded_scheduler()
+        //     .core_threads(self.config.num_worker_threads)
+        //     .thread_name(format!("node-{}", self.id))
+        //     .enable_all()
+        //     .build()
+        //     .unwrap();
+        // runtime.block_on(self.async_run());
+
+        task::block_on(async {
+            self.async_run().await
+        });
+
         slog::debug!(self.config.logger, "Node {}: finished running", self.id);
     }
 
@@ -103,32 +119,38 @@ impl Node {
     ///
     /// The method immediately returns.
     pub fn run_async(mut self) -> NodeHandle {
-        // Clone to avoid move to other thread.
-        let shutdown_tx = self.shutdown_tx.clone();
-        // Copy dataflow graph to the other thread
-        self.dataflow_graph = Some(default_graph::clone());
-        let initialized = self.initialized.clone();
-        let thread_handle = thread::spawn(move || {
-            self.run();
-        });
-        // Wait for ERDOS to start up.
-        let (lock, cvar) = &*initialized;
-        let mut started = lock.lock().unwrap();
-        while !*started {
-            started = cvar.wait(started).unwrap();
-        }
+        async_std::task::block_on(async {
+            // Clone to avoid move to other thread.
+            let shutdown_tx = self.shutdown_tx.clone();
+            // Copy dataflow graph to the other thread
+            self.dataflow_graph = Some(default_graph::clone());
+            let initialized = self.initialized.clone();
+            let thread_handle = thread::spawn(move || {
+                self.run();
+            });
+            // Wait for ERDOS to start up.
+            let (lock, cvar) = &*initialized;
+            let mut started = lock.lock().await;
+            while !*started {
+                started = cvar.wait(started).await;
+            }
 
-        NodeHandle {
-            thread_handle,
-            shutdown_tx,
-        }
+            NodeHandle {
+                thread_handle,
+                shutdown_tx,
+            }
+        })
+
     }
 
     fn set_node_initialized(&mut self) {
-        let (lock, cvar) = &*self.initialized;
-        let mut started = lock.lock().unwrap();
-        *started = true;
-        cvar.notify_all();
+        async_std::task::block_on(async {
+            let (lock, cvar) = &*self.initialized;
+            let mut started = lock.lock().await;
+            *started = true;
+            cvar.notify_all();
+        });
+
 
         slog::debug!(self.config.logger, "Node {}: done initializing.", self.id);
     }
@@ -241,12 +263,12 @@ impl Node {
 
     async fn wait_for_local_operators_initialized(
         &mut self,
-        mut rx_from_operators: UnboundedReceiver<ControlMessage>,
+        mut rx_from_operators: Receiver<ControlMessage>,
         num_local_operators: usize,
     ) {
         let mut initialized_operators = HashSet::new();
         while initialized_operators.len() < num_local_operators {
-            if let Some(ControlMessage::OperatorInitialized(op_id)) = rx_from_operators.recv().await
+            if let Ok(ControlMessage::OperatorInitialized(op_id)) = rx_from_operators.recv().await
             {
                 initialized_operators.insert(op_id);
             }
@@ -261,6 +283,7 @@ impl Node {
         );
         self.control_handler
             .broadcast_to_nodes(ControlMessage::AllOperatorsInitializedOnNode(self.id))
+            .await
             .map_err(|e| format!("Error broadcasting control message: {:?}", e))
     }
 
@@ -285,7 +308,9 @@ impl Node {
         Ok(())
     }
 
-    async fn run_operators(&mut self) -> Result<(), String> {
+    async fn run_operators(&mut self) -> Result<(), CommunicationError> {
+        let id = self.id.clone();
+        let logger = self.config.logger.clone();
         self.wait_for_communication_layer_initialized().await?;
 
         let graph_ref = self
@@ -294,7 +319,7 @@ impl Node {
             .unwrap_or_else(|| panic!("Node {}: dataflow graph must be set.", self.id));
         let graph = scheduler::schedule(graph_ref);
         if let Some(filename) = &self.config.graph_filename {
-            graph.to_dot(filename.as_str()).map_err(|e| e.to_string())?;
+            graph.to_dot(filename.as_str()).map_err(CommunicationError::from)?;
         }
 
         let channel_manager = ChannelManager::new(
@@ -305,19 +330,25 @@ impl Node {
         )
         .await;
         // Execute operators scheduled on the current node.
-        let channel_manager = Arc::new(std::sync::Mutex::new(channel_manager));
+        let channel_manager = Arc::new(Mutex::new(channel_manager));
         let local_operators: Vec<_> = graph
             .get_operators()
             .into_iter()
             .filter(|op| op.node_id == self.id)
             .collect();
 
-        let (operator_tx, rx_from_operators) = mpsc::unbounded_channel();
+        let (operator_tx, rx_from_operators) = channel::unbounded();
         let mut channels_to_operators = HashMap::new();
 
         let num_local_operators = local_operators.len();
 
         let mut join_handles = Vec::with_capacity(num_local_operators);
+
+        // Using barrier instead of futures::join_all for waiting operators
+        let barrier_count = num_local_operators + 1;
+        let barrier = Arc::new(Barrier::new(barrier_count));
+        slog::debug!(logger, "Node {} barrier with {}", id, barrier_count);
+
         for operator_info in local_operators {
             let name = operator_info
                 .name
@@ -331,13 +362,18 @@ impl Node {
             );
             let channel_manager_copy = Arc::clone(&channel_manager);
             let operator_tx_copy = operator_tx.clone();
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = channel::unbounded();
             channels_to_operators.insert(operator_info.id, tx);
             // Launch the operator as a separate async task.
-            let join_handle = tokio::spawn(async move {
+            let log = logger.clone();
+            let b = barrier.clone();
+            let join_handle = task::spawn(async move {
                 let mut operator_executor =
                     (operator_info.runner)(channel_manager_copy, operator_tx_copy, rx);
+                slog::debug!(log, "Node {} operator executor starting", id);
                 operator_executor.execute().await;
+                b.wait().await;
+                slog::debug!(log, "Node {} operator executor done", id);
             });
             join_handles.push(join_handle);
         }
@@ -360,14 +396,18 @@ impl Node {
         // Tell all operators to run.
         for (op_id, tx) in channels_to_operators {
             tx.send(ControlMessage::RunOperator(op_id))
-                .map_err(|e| format!("Error telling operator to run: {}", e))?;
+                .await
+                .map_err(CommunicationError::from)?;
         }
         // Wait for all operators to finish running.
-        future::join_all(join_handles).await;
+        //future::join_all(join_handles).await;
+        barrier.wait().await;
         Ok(())
     }
 
     async fn async_run(&mut self) {
+        slog::debug!(self.config.logger, "Node {}: async_run", self.id);
+        let id = self.id.clone();
         // Assign values used later to avoid lifetime errors.
         let num_nodes = self.config.data_addresses.len();
         let logger = self.config.logger.clone();
@@ -378,18 +418,24 @@ impl Node {
             &self.config.logger,
         )
         .await;
+
+        slog::debug!(logger, "Node {}: created control_streams", id);
+
+
         let data_streams = communication::create_tcp_streams(
             self.config.data_addresses.clone(),
             self.id,
             &self.config.logger,
         )
         .await;
+
+        slog::debug!(logger, "Node {}: created data_streams", id);
         let (control_senders, control_receivers) =
             self.split_control_streams(control_streams).await;
         let (senders, receivers) = self.split_data_streams(data_streams).await;
         // Listen for shutdown message.
         let mut shutdown_rx = self.shutdown_rx.take().unwrap();
-        let shutdown_fut = shutdown_rx.recv();
+        // let shutdown_fut = async { let _ = shutdown_rx.recv(); Ok(())};
         // Execute threads that send data to other nodes.
         let control_senders_fut = senders::run_control_senders(control_senders);
         let senders_fut = senders::run_senders(senders);
@@ -399,42 +445,81 @@ impl Node {
         // Execute operators.
         let ops_fut = self.run_operators();
         // These threads only complete when a failure happens.
+        slog::debug!(logger, "Node {}: created futures", id);
         if num_nodes <= 1 {
             // Senders and Receivers should return if there's only 1 node.
-            if let Err(e) = tokio::try_join!(
-                senders_fut,
-                recvs_fut,
-                control_senders_fut,
-                control_recvs_fut
-            ) {
-                slog::error!(
-                    logger,
-                    "Non-fatal network communication error; this should not happen! {:?}",
-                    e
-                );
-            }
-            tokio::select! {
-                Err(e) = ops_fut => slog::error!(
-                    logger,
-                    "Error running operators on node {:?}: {:?}", self.id, e
-                ),
-                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
-            }
+            // if let Err(e) = futures::try_join!(
+            //     senders_fut,
+            //     recvs_fut,
+            //     control_senders_fut,
+            //     control_recvs_fut
+            // ) {
+            //     slog::error!(
+            //         logger,
+            //         "Non-fatal network communication error; this should not happen! {:?}",
+            //         e
+            //     );
+            // }
+
+            // if let Err(e) = senders_fut.try_join(recvs_fut).try_join(control_senders_fut).try_join(control_recvs_fut).await {
+            //     slog::error!(
+            //                 logger,
+            //                 "Non-fatal network communication error; this should not happen! {:?}",
+            //                 e
+            //             );
+            // }
+
+            // let f = ops_fut.race(shutdown_fut);
+            // slog::debug!(logger, "Node {}: race!", id);
+            // let r = f.await;
+            // println!("{:?}",r);
+            let r = senders_fut.join(recvs_fut).join(control_senders_fut).join(control_recvs_fut).join(ops_fut).await;
+            slog::debug!(logger, "Result {:?}", r);
+            // if let Err(e) = senders_fut.race(recvs_fut).race(control_senders_fut).race(control_recvs_fut).race(ops_fut).race(shutdown_fut).await {
+            //     slog::error!(
+            //                 logger,
+            //                 "Non-fatal network communication error; this should not happen! {:?}",
+            //                 e
+            //             );
+            // }
+            println!("Exiting {}",id);
+            // futures::select! {
+            //     Err(e) = ops_fut => slog::error!(
+            //         logger,
+            //         "Error running operators on node {:?}: {:?}", self.id, e
+            //     ),
+            //     _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+            // }
         } else {
-            tokio::select! {
-                Err(e) = senders_fut => slog::error!(logger, "Error with data senders: {:?}", e),
-                Err(e) = recvs_fut => slog::error!(logger, "Error with data receivers: {:?}", e),
-                Err(e) = control_senders_fut => slog::error!(logger, "Error with control senders: {:?}", e),
-                Err(e) = control_recvs_fut => slog::error!(
-                    self.config.logger,
-                    "Error with control receivers: {:?}", e
-                ),
-                Err(e) = ops_fut => slog::error!(
-                    logger,
-                    "Error running operators on node {:?}: {:?}", self.id, e
-                ),
-                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
-            }
+            //println!("Nothing to do");
+
+            let r = senders_fut.join(recvs_fut).join(control_senders_fut).join(control_recvs_fut).join(ops_fut).await;
+            slog::debug!(logger, "Result {:?}", r);
+            // if let Err(e) = senders_fut.race(recvs_fut).race(control_senders_fut).race(control_recvs_fut).race(ops_fut).race(shutdown_fut).await {
+            //     slog::error!(
+            //                 logger,
+            //                 "Non-fatal network communication error; this should not happen! {:?}",
+            //                 e
+            //             );
+            // }
+            // let f = ops_fut.race(shutdown_fut);
+            // slog::debug!(logger, "Node {}: race!", id);
+            // let r = f.await;
+            println!("Exiting {}", id);
+            // futures::select! {
+            //     Err(e) = senders_fut => slog::error!(logger, "Error with data senders: {:?}", e),
+            //     Err(e) = recvs_fut => slog::error!(logger, "Error with data receivers: {:?}", e),
+            //     Err(e) = control_senders_fut => slog::error!(logger, "Error with control senders: {:?}", e),
+            //     Err(e) = control_recvs_fut => slog::error!(
+            //         self.config.logger,`
+            //         "Error with control receivers: {:?}", e
+            //     ),
+            //     Err(e) = ops_fut => slog::error!(
+            //         logger,
+            //         "Error running operators on node {:?}: {:?}", self.id, e
+            //     ),
+            //     _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+            // }
         }
     }
 }

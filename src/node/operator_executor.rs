@@ -11,11 +11,16 @@ use std::{
 };
 
 use futures::future;
-use tokio::{
-    self,
-    stream::{Stream, StreamExt},
-    sync::{mpsc, watch},
-};
+// use tokio::{
+//     self,
+//     stream::{Stream, StreamExt},
+//     sync::{mpsc, watch},
+// };
+
+use async_std::stream::{Stream, StreamExt};
+use async_std::channel;
+use async_std::task;
+use async_std::channel::TryRecvError;
 
 use crate::{
     communication::{ControlMessage, RecvEndpoint},
@@ -77,16 +82,16 @@ impl<D: Data> Stream for OperatorExecutorStream<D> {
             mut_self.recv_endpoint = endpoint;
         }
         match mut_self.recv_endpoint.as_mut() {
-            Some(RecvEndpoint::InterThread(rx)) => match rx.poll_recv(cx) {
-                Poll::Ready(Some(msg)) => {
+            Some(RecvEndpoint::InterThread(rx)) => match rx.try_recv() {
+                Ok(msg) => {
                     if msg.is_top_watermark() {
                         self.closed.store(true, Ordering::SeqCst);
                         self.recv_endpoint = None;
                     }
                     Poll::Ready(Some(self.stream.borrow().make_events(msg)))
                 }
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
+                Err(TryRecvError::Empty) => Poll::Ready(None),
+                Err(TryRecvError::Closed) => Poll::Pending,
             },
             None => Poll::Ready(None),
         }
@@ -140,7 +145,7 @@ pub struct OperatorExecutor {
     /// A lattice that keeps a partial order of the events that need to be processed.
     lattice: Arc<ExecutionLattice>,
     /// Receives control messages regarding the operator.
-    control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+    control_rx: channel::Receiver<ControlMessage>,
 }
 
 impl OperatorExecutor {
@@ -149,7 +154,7 @@ impl OperatorExecutor {
         operator: T,
         config: OperatorConfig<U>,
         mut operator_streams: Vec<Box<dyn OperatorExecutorStreamT>>,
-        control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+        control_rx: channel::Receiver<ControlMessage>,
     ) -> Self {
         let streams_closed: HashMap<_, _> = operator_streams
             .iter()
@@ -187,8 +192,11 @@ impl OperatorExecutor {
     /// input streams, adding them to the lattice maintained by the executor and notifying the
     /// `event_runner` invocations to process the received events.
     pub async fn execute(&mut self) {
+        let id  = self.config.node_id.clone();
+        slog::debug!(crate::TERMINAL_LOGGER, "Node {} execute", id);
+
         loop {
-            if let Some(ControlMessage::RunOperator(id)) = self.control_rx.recv().await {
+            if let Ok(ControlMessage::RunOperator(id)) = self.control_rx.recv().await {
                 if id == self.config.id {
                     break;
                 }
@@ -208,18 +216,21 @@ impl OperatorExecutor {
         );
 
         // Callbacks are not invoked while the operator is running.
-        tokio::task::block_in_place(|| self.operator.run());
+        async_std::task::block_on(async {
+            slog::debug!(crate::TERMINAL_LOGGER, "Node {} calling operator.run()", id);
+                self.operator.run()
+        });
 
         if let Some(mut event_stream) = self.event_stream.take() {
             // Launch consumers
             // TODO: use CondVar instead of watch.
             // TODO: adjust number of event runners. based on size of event lattice.
-            let (notifier_tx, notifier_rx) = watch::channel(EventRunnerMessage::AddedEvents);
+            let (notifier_tx, notifier_rx) = channel::bounded(1);
             let mut event_runner_handles = Vec::new();
             for _ in 0..self.config.num_event_runners {
                 let event_runner_fut =
                     Self::event_runner(Arc::clone(&self.lattice), notifier_rx.clone());
-                event_runner_handles.push(tokio::spawn(event_runner_fut));
+                event_runner_handles.push(task::spawn(event_runner_fut));
             }
             while let Some(events) = event_stream.next().await {
                 {
@@ -227,13 +238,15 @@ impl OperatorExecutor {
                     self.lattice.add_events(events).await;
                     // Notify receivers that new events were added.
                     notifier_tx
-                        .broadcast(EventRunnerMessage::AddedEvents)
+                        .send(EventRunnerMessage::AddedEvents)
+                        .await
                         .unwrap();
                 }
             }
             // Wait for event runners to finish.
             notifier_tx
-                .broadcast(EventRunnerMessage::DestroyOperator)
+                .send(EventRunnerMessage::DestroyOperator)
+                .await
                 .unwrap();
             // Handle errors?
             future::join_all(event_runner_handles).await;
@@ -255,10 +268,10 @@ impl OperatorExecutor {
     /// ready to run, executes them, and notifies the lattice of their completion.
     async fn event_runner(
         lattice: Arc<ExecutionLattice>,
-        mut notifier_rx: watch::Receiver<EventRunnerMessage>,
+        mut notifier_rx: channel::Receiver<EventRunnerMessage>,
     ) {
         // Wait for notification for events added.
-        while let Some(control_msg) = notifier_rx.recv().await {
+        while let Ok(control_msg) = notifier_rx.recv().await {
             while let Some((event, event_id)) = lattice.get_event().await {
                 (event.callback)();
                 lattice.mark_as_completed(event_id).await;

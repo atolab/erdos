@@ -1,7 +1,12 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{any::Any, collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, Mutex};
+// use tokio::sync::{mpsc, Mutex};
+
+// use std::sync::Mutex;
+
+use async_std::sync::Mutex;
+use async_std::channel;
 
 use crate::{
     communication::{Pusher, PusherT, RecvEndpoint, SendEndpoint},
@@ -97,7 +102,7 @@ where
     }
 
     fn add_inter_thread_channel(&mut self) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = channel::unbounded();
         self.add_send_endpoint(SendEndpoint::InterThread(tx));
         self.add_recv_endpoint(RecvEndpoint::InterThread(rx));
     }
@@ -124,7 +129,7 @@ where
             .entry(self.stream_id)
             .or_insert_with(|| Box::new(Pusher::<Arc<Message<D>>>::new()));
         if let Some(pusher) = pusher.as_any().downcast_mut::<Pusher<Arc<Message<D>>>>() {
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = channel::unbounded();
             pusher.add_endpoint(SendEndpoint::InterThread(tx));
             self.add_recv_endpoint(RecvEndpoint::InterThread(rx));
             Ok(())
@@ -217,7 +222,7 @@ impl ChannelManager {
         // Send pushers to the DataReceiver which publishes received messages from TCP
         // on the proper transport channel.
         for (k, v) in receiver_pushers.into_iter() {
-            channels_to_receivers.lock().await.send(k, v);
+            channels_to_receivers.lock().await.send(k, v).await;
         }
         channel_manager
     }

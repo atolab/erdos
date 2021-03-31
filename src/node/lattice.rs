@@ -5,7 +5,8 @@ use std::{
     sync::Arc,
 };
 
-use futures::lock::Mutex;
+// use futures::lock::Mutex;
+use async_std::sync::Mutex;
 use petgraph::{
     dot::{self, Dot},
     stable_graph::{EdgeIndex, NodeIndex, StableGraph},

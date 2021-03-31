@@ -73,6 +73,10 @@ impl From<CommunicationError> for WriteStreamError {
                 eprintln!("Got write stream IOError {}", io_error);
                 WriteStreamError::IOError
             }
+            CommunicationError::UnknownError(error) => {
+                eprintln!("Got write stream UnknownError {}", error);
+                WriteStreamError::IOError
+            }
         }
     }
 }

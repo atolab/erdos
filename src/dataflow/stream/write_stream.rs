@@ -1,11 +1,15 @@
 use std::{fmt, sync::Arc};
 
 use serde::Deserialize;
+use async_trait::async_trait;
+
 
 use crate::{
     communication::{Pusher, SendEndpoint},
     dataflow::{Data, Message, Timestamp},
 };
+
+use async_std::task;
 
 use super::{errors::WriteStreamError, StreamId, WriteStreamT};
 
@@ -206,6 +210,7 @@ impl<D: Data> fmt::Debug for WriteStream<D> {
     }
 }
 
+
 impl<'a, D: Data + Deserialize<'a>> WriteStreamT<D> for WriteStream<D> {
     fn send(&mut self, msg: Message<D>) -> Result<(), WriteStreamError> {
         // Check if the stream was closed before, and return an error.
@@ -236,7 +241,7 @@ impl<'a, D: Data + Deserialize<'a>> WriteStreamT<D> for WriteStream<D> {
         let msg_arc = Arc::new(msg);
 
         match self.pusher.as_mut() {
-            Some(pusher) => pusher.send(msg_arc).map_err(WriteStreamError::from)?,
+            Some(pusher) => task::block_on(async { pusher.send(msg_arc).await }).map_err(WriteStreamError::from)?,
             None => {
                 slog::debug!(
                     crate::TERMINAL_LOGGER,

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use slog::{self, Logger};
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+// use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use async_std::channel::{self, Sender, Receiver};
 
 use crate::node::NodeId;
 
@@ -12,20 +13,20 @@ pub struct ControlMessageHandler {
     /// Logger for error messages.
     logger: Logger,
     /// Sender to clone so other tasks can send messages to `self.rx`.
-    tx: UnboundedSender<ControlMessage>,
+    tx: Sender<ControlMessage>,
     /// Receiver for all `ControlMessage`s
-    rx: UnboundedReceiver<ControlMessage>,
-    channels_to_control_senders: HashMap<NodeId, UnboundedSender<ControlMessage>>,
-    channels_to_control_receivers: HashMap<NodeId, UnboundedSender<ControlMessage>>,
-    channels_to_data_senders: HashMap<NodeId, UnboundedSender<ControlMessage>>,
-    channels_to_data_receivers: HashMap<NodeId, UnboundedSender<ControlMessage>>,
-    channels_to_nodes: HashMap<NodeId, UnboundedSender<ControlMessage>>,
+    rx: Receiver<ControlMessage>,
+    channels_to_control_senders: HashMap<NodeId, Sender<ControlMessage>>,
+    channels_to_control_receivers: HashMap<NodeId, Sender<ControlMessage>>,
+    channels_to_data_senders: HashMap<NodeId, Sender<ControlMessage>>,
+    channels_to_data_receivers: HashMap<NodeId, Sender<ControlMessage>>,
+    channels_to_nodes: HashMap<NodeId, Sender<ControlMessage>>,
 }
 
 #[allow(dead_code)]
 impl ControlMessageHandler {
     pub fn new(logger: Logger) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = channel::unbounded();
         Self {
             logger,
             tx,
@@ -41,7 +42,7 @@ impl ControlMessageHandler {
     pub fn add_channel_to_control_sender(
         &mut self,
         node_id: NodeId,
-        tx: UnboundedSender<ControlMessage>,
+        tx: Sender<ControlMessage>,
     ) {
         if let Some(_) = self.channels_to_control_senders.insert(node_id, tx) {
             slog::error!(
@@ -52,23 +53,23 @@ impl ControlMessageHandler {
         }
     }
 
-    pub fn send_to_control_sender(
+    pub async fn send_to_control_sender(
         &mut self,
         node_id: NodeId,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         match self.channels_to_control_senders.get_mut(&node_id) {
-            Some(tx) => tx.send(msg).map_err(CommunicationError::from),
+            Some(tx) => tx.send(msg).await.map_err(CommunicationError::from),
             None => Err(CommunicationError::Disconnected),
         }
     }
 
-    pub fn broadcast_to_control_senders(
+    pub async fn broadcast_to_control_senders(
         &mut self,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         for tx in self.channels_to_control_senders.values_mut() {
-            tx.send(msg.clone()).map_err(CommunicationError::from)?;
+            tx.send(msg.clone()).await.map_err(CommunicationError::from)?;
         }
         Ok(())
     }
@@ -76,7 +77,7 @@ impl ControlMessageHandler {
     pub fn add_channel_to_control_receiver(
         &mut self,
         node_id: NodeId,
-        tx: UnboundedSender<ControlMessage>,
+        tx: Sender<ControlMessage>,
     ) {
         if let Some(_) = self.channels_to_control_receivers.insert(node_id, tx) {
             slog::error!(
@@ -87,23 +88,23 @@ impl ControlMessageHandler {
         }
     }
 
-    pub fn send_to_control_receiver(
+    pub async fn send_to_control_receiver(
         &mut self,
         node_id: NodeId,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         match self.channels_to_control_receivers.get_mut(&node_id) {
-            Some(tx) => tx.send(msg).map_err(CommunicationError::from),
+            Some(tx) => tx.send(msg).await.map_err(CommunicationError::from),
             None => Err(CommunicationError::Disconnected),
         }
     }
 
-    pub fn broadcast_to_control_receivers(
+    pub async fn broadcast_to_control_receivers(
         &mut self,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         for tx in self.channels_to_control_receivers.values_mut() {
-            tx.send(msg.clone()).map_err(CommunicationError::from)?;
+            tx.send(msg.clone()).await.map_err(CommunicationError::from)?;
         }
         Ok(())
     }
@@ -111,7 +112,7 @@ impl ControlMessageHandler {
     pub fn add_channel_to_data_sender(
         &mut self,
         node_id: NodeId,
-        tx: UnboundedSender<ControlMessage>,
+        tx: Sender<ControlMessage>,
     ) {
         if let Some(_) = self.channels_to_data_senders.insert(node_id, tx) {
             slog::error!(
@@ -122,23 +123,23 @@ impl ControlMessageHandler {
         }
     }
 
-    pub fn send_to_data_sender(
+    pub async fn send_to_data_sender(
         &mut self,
         node_id: NodeId,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         match self.channels_to_data_senders.get_mut(&node_id) {
-            Some(tx) => tx.send(msg).map_err(CommunicationError::from),
+            Some(tx) => tx.send(msg).await.map_err(CommunicationError::from),
             None => Err(CommunicationError::Disconnected),
         }
     }
 
-    pub fn broadcast_to_data_senders(
+    pub async fn broadcast_to_data_senders(
         &mut self,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         for tx in self.channels_to_data_senders.values_mut() {
-            tx.send(msg.clone()).map_err(CommunicationError::from)?;
+            tx.send(msg.clone()).await.map_err(CommunicationError::from)?;
         }
         Ok(())
     }
@@ -146,7 +147,7 @@ impl ControlMessageHandler {
     pub fn add_channel_to_data_receiver(
         &mut self,
         node_id: NodeId,
-        tx: UnboundedSender<ControlMessage>,
+        tx: Sender<ControlMessage>,
     ) {
         if let Some(_) = self.channels_to_data_receivers.insert(node_id, tx) {
             slog::error!(
@@ -157,55 +158,55 @@ impl ControlMessageHandler {
         }
     }
 
-    pub fn send_to_data_receiver(
+    pub async fn send_to_data_receiver(
         &mut self,
         node_id: NodeId,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         match self.channels_to_data_receivers.get_mut(&node_id) {
-            Some(tx) => tx.send(msg).map_err(CommunicationError::from),
+            Some(tx) => tx.send(msg).await.map_err(CommunicationError::from),
             None => Err(CommunicationError::Disconnected),
         }
     }
 
-    pub fn broadcast_to_data_receivers(
+    pub async fn broadcast_to_data_receivers(
         &mut self,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         for tx in self.channels_to_data_receivers.values_mut() {
-            tx.send(msg.clone()).map_err(CommunicationError::from)?;
+            tx.send(msg.clone()).await.map_err(CommunicationError::from)?;
         }
         Ok(())
     }
 
-    pub fn add_channel_to_node(&mut self, node_id: NodeId, tx: UnboundedSender<ControlMessage>) {
+    pub fn add_channel_to_node(&mut self, node_id: NodeId, tx: Sender<ControlMessage>) {
         self.channels_to_nodes.insert(node_id, tx);
     }
 
-    pub fn send_to_node(
+    pub async fn send_to_node(
         &mut self,
         node_id: NodeId,
         msg: ControlMessage,
     ) -> Result<(), CommunicationError> {
         match self.channels_to_nodes.get_mut(&node_id) {
-            Some(tx) => tx.send(msg).map_err(CommunicationError::from),
+            Some(tx) => tx.send(msg).await.map_err(CommunicationError::from),
             None => Err(CommunicationError::Disconnected),
         }
     }
 
-    pub fn broadcast_to_nodes(&mut self, msg: ControlMessage) -> Result<(), CommunicationError> {
+    pub async fn broadcast_to_nodes(&mut self, msg: ControlMessage) -> Result<(), CommunicationError> {
         for tx in self.channels_to_nodes.values_mut() {
-            tx.send(msg.clone()).map_err(CommunicationError::from)?;
+            tx.send(msg.clone()).await.map_err(CommunicationError::from)?;
         }
         Ok(())
     }
 
-    pub fn get_channel_to_handler(&self) -> UnboundedSender<ControlMessage> {
+    pub fn get_channel_to_handler(&self) -> Sender<ControlMessage> {
         self.tx.clone()
     }
 
     pub async fn read(&mut self) -> Result<ControlMessage, CommunicationError> {
-        self.rx.recv().await.ok_or(CommunicationError::Disconnected)
+        self.rx.recv().await.map_err(|_| CommunicationError::Disconnected)
     }
 
     // TODO: try to implement this via a generic
@@ -228,7 +229,7 @@ impl ControlMessageHandler {
         }
         // Re-enqueue read messages.
         for msg in read_msgs {
-            self.tx.send(msg).map_err(CommunicationError::from)?;
+            self.tx.send(msg).await.map_err(CommunicationError::from)?;
         }
         result.unwrap()
     }
@@ -252,7 +253,7 @@ impl ControlMessageHandler {
         }
         // Re-enqueue read messages.
         for msg in read_msgs {
-            self.tx.send(msg).map_err(CommunicationError::from)?;
+            self.tx.send(msg).await.map_err(CommunicationError::from)?;
         }
         result.unwrap()
     }

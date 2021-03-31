@@ -1,7 +1,9 @@
 use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
-use bytes::BytesMut;
+// use bytes::BytesMut;
 use std::fmt::Debug;
-use tokio_util::codec::{Decoder, Encoder};
+// use tokio_util::codec::{Decoder, Encoder};
+
+use futures_codec::{Framed, BytesMut, Decoder, Encoder};
 
 use crate::communication::{CodecError, ControlMessage};
 
@@ -61,8 +63,9 @@ impl Decoder for ControlMessageCodec {
     }
 }
 
-impl Encoder<ControlMessage> for ControlMessageCodec {
+impl Encoder for ControlMessageCodec {
     type Error = CodecError;
+    type Item = ControlMessage;
 
     fn encode(&mut self, msg: ControlMessage, buf: &mut BytesMut) -> Result<(), CodecError> {
         // Get the serialized size of the message header.

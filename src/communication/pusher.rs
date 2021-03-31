@@ -6,6 +6,10 @@ use std::{
 
 use bytes::BytesMut;
 use serde::Deserialize;
+use async_std::task;
+use async_trait::async_trait;
+
+// use async_std::sync::Arc;
 
 use crate::{
     communication::{
@@ -43,9 +47,9 @@ impl<D: 'static + Serializable + Send + Sync + Debug> Pusher<Arc<D>> {
         self.endpoints.push(endpoint);
     }
 
-    pub fn send(&mut self, msg: Arc<D>) -> Result<(), CommunicationError> {
+    pub async fn send(&mut self, msg: Arc<D>) -> Result<(), CommunicationError> {
         for endpoint in self.endpoints.iter_mut() {
-            endpoint.send(Arc::clone(&msg))?;
+            endpoint.send(Arc::clone(&msg)).await?;
         }
         Ok(())
     }
@@ -78,7 +82,7 @@ where
                 DeserializedMessage::<D>::Ref(msg) => msg.clone(),
             };
             let msg_arc = Arc::new(msg);
-            self.send(msg_arc)?;
+            task::block_on(async { self.send(msg_arc).await})?;
         }
         Ok(())
     }

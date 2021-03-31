@@ -1,14 +1,23 @@
 use futures::{future, stream::SplitStream};
 use futures_util::stream::StreamExt;
-use std::{collections::HashMap, sync::Arc};
-use tokio::{
-    net::TcpStream,
-    sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-        Mutex,
-    },
-};
-use tokio_util::codec::Framed;
+// use std::collections::HashMap;
+use std::{collections::HashMap, sync::{Arc}};
+// use tokio::{
+//     net::TcpStream,
+//     sync::{
+//         mpsc::{self, UnboundedReceiver, UnboundedSender},
+//         Mutex,
+//     },
+// };
+// use tokio_util::codec::Framed;
+
+
+// Replacing tokio with async_std equivalents
+use async_std::channel::{self, Sender, Receiver};
+use async_std::sync::Mutex;
+use async_std::net::TcpStream;
+
+use futures_codec::Framed;
 
 use crate::{
     communication::{
@@ -28,15 +37,15 @@ pub(crate) struct DataReceiver {
     /// Framed TCP read stream.
     stream: SplitStream<Framed<TcpStream, MessageCodec>>,
     /// Channel receiver on which new pusher updates are received.
-    rx: UnboundedReceiver<(StreamId, Box<dyn PusherT>)>,
+    rx: Receiver<(StreamId, Box<dyn PusherT>)>,
     /// Mapping between stream id to [`PusherT`] trait objects.
     /// [`PusherT`] trait objects are used to deserialize and send
     /// messages to operators.
     stream_id_to_pusher: HashMap<StreamId, Box<dyn PusherT>>,
     /// Tokio channel sender to `ControlMessageHandler`.
-    control_tx: UnboundedSender<ControlMessage>,
+    control_tx: Sender<ControlMessage>,
     /// Tokio channel receiver from `ControlMessageHandler`.
-    control_rx: UnboundedReceiver<ControlMessage>,
+    control_rx: Receiver<ControlMessage>,
 }
 
 impl DataReceiver {
@@ -47,11 +56,11 @@ impl DataReceiver {
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
         // Create a channel for this stream.
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = channel::unbounded();
         // Add entry in the shared state vector.
         channels_to_receivers.lock().await.add_sender(tx);
         // Set up control channel.
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = channel::unbounded();
         control_handler.add_channel_to_data_receiver(node_id, control_tx);
         Self {
             node_id,
@@ -66,7 +75,7 @@ impl DataReceiver {
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
         // Notify `ControlMessageHandler` that receiver is initialized.
         self.control_tx
-            .send(ControlMessage::DataReceiverInitialized(self.node_id))
+            .send(ControlMessage::DataReceiverInitialized(self.node_id)).await
             .map_err(CommunicationError::from)?;
         while let Some(res) = self.stream.next().await {
             match res {
@@ -129,9 +138,9 @@ pub(crate) struct ControlReceiver {
     /// Framed TCP read stream.
     stream: SplitStream<Framed<TcpStream, ControlMessageCodec>>,
     /// Tokio channel sender to `ControlMessageHandler`.
-    control_tx: UnboundedSender<ControlMessage>,
+    control_tx: Sender<ControlMessage>,
     /// Tokio channel receiver from `ControlMessageHandler`.
-    control_rx: UnboundedReceiver<ControlMessage>,
+    control_rx: Receiver<ControlMessage>,
 }
 
 impl ControlReceiver {
@@ -141,7 +150,7 @@ impl ControlReceiver {
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
         // Set up control channel.
-        let (tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, control_rx) = channel::unbounded();
         control_handler.add_channel_to_control_receiver(node_id, tx);
         Self {
             node_id,
@@ -157,12 +166,14 @@ impl ControlReceiver {
         // Notify `ControlMessageHandler` that sender is initialized.
         self.control_tx
             .send(ControlMessage::ControlReceiverInitialized(self.node_id))
+            .await
             .map_err(CommunicationError::from)?;
         while let Some(res) = self.stream.next().await {
             match res {
                 Ok(msg) => {
                     self.control_tx
                         .send(msg)
+                        .await
                         .map_err(CommunicationError::from)?;
                 }
                 Err(e) => return Err(CommunicationError::from(e)),

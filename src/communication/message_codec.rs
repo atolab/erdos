@@ -1,7 +1,11 @@
 use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
-use bytes::{buf::ext::BufMutExt, BytesMut};
+// use bytes::{buf::ext::BufMutExt, BytesMut};
 use std::fmt::Debug;
-use tokio_util::codec::{Decoder, Encoder};
+// use tokio_util::codec::{Decoder, Encoder};
+
+use bytes::buf::BufMutExt;
+use futures_codec::{Framed, BytesMut, Decoder, Encoder};
+
 
 use crate::communication::{CodecError, InterProcessMessage, MessageMetadata};
 
@@ -101,8 +105,9 @@ impl Decoder for MessageCodec {
     }
 }
 
-impl Encoder<InterProcessMessage> for MessageCodec {
+impl Encoder for MessageCodec {
     type Error = CodecError;
+    type Item = InterProcessMessage;
 
     /// Encodes a InterProcessMessage into a buffer.
     ///
@@ -134,6 +139,7 @@ impl Encoder<InterProcessMessage> for MessageCodec {
         Ok(())
     }
 }
+
 
 impl Default for MessageCodec {
     fn default() -> Self {
