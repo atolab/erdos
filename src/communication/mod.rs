@@ -256,11 +256,9 @@ async fn connect_to_node(
 ) -> Result<TcpStream, std::io::Error> {
     // Keeps on reatying to connect to `dst_addr` until it succeeds.
     let mut last_err_msg_time = Instant::now();
-    // println!("=== NODE ===  {:?} o-> {:?}", node_id, dst_addr);
     loop {
         match TcpStream::connect(dst_addr).await {
             Ok(mut stream) => {
-                // println!("=== NODE ===  {:?} <---> {:?}", node_id, dst_addr);
                 stream.set_nodelay(true).expect("couldn't disable Nagle");
                 // Send the node id so that the TCP server knows with which
                 // node the connection was established.
