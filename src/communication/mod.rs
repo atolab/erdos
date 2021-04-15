@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
+use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt, };
 use bytes::BytesMut;
 use futures::future;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use tokio::{
     prelude::*,
     time::delay_for,
 };
-
+use std::boxed::Box;
 use crate::{dataflow::stream::StreamId, node::NodeId, OperatorId};
 
 // Private submodules
@@ -36,10 +36,13 @@ pub(crate) mod senders;
 use serializable::Serializable;
 
 // Module-wide exports
+#[cfg(feature = "tcp_transport")]
 pub(crate) use control_message_codec::ControlMessageCodec;
+#[cfg(feature = "tcp_transport")]
+pub(crate) use message_codec::MessageCodec;
+
 pub(crate) use control_message_handler::ControlMessageHandler;
 pub(crate) use errors::{CodecError, CommunicationError, TryRecvError};
-pub(crate) use message_codec::MessageCodec;
 pub(crate) use pusher::{Pusher, PusherT};
 
 // Crate-wide exports
@@ -54,6 +57,23 @@ pub enum ControlMessage {
     DataReceiverInitialized(NodeId),
     ControlSenderInitialized(NodeId),
     ControlReceiverInitialized(NodeId),
+}
+
+impl ControlMessage {
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn into_rbuf(&self) -> Result<zenoh::net::RBuf, CodecError> {
+        let serialized_msg = bincode::serialize(&self).map_err(|e| CodecError::from(e))?;
+        Ok(serialized_msg.into())
+
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_rbuf(buf: &zenoh::net::RBuf) -> Result<ControlMessage, CodecError> {
+        let msg_bytes = buf.to_vec();
+        let msg = bincode::deserialize(&msg_bytes).map_err(|e| CodecError::from(e))?;
+        Ok(msg)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +105,88 @@ impl InterProcessMessage {
         Self::Deserialized {
             metadata: MessageMetadata { stream_id },
             data,
+        }
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn into_rbuf(&self) -> Result<zenoh::net::RBuf, CodecError> {
+        const HEADER_SIZE: usize = 8;
+        match self {
+            InterProcessMessage::Deserialized { metadata, data } => {
+                let mut buf = Vec::new();
+                let metadata_size = bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = data.serialized_size().map_err(|e|
+                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!("{:?}",e))))
+                )?;
+                buf.reserve(HEADER_SIZE + metadata_size as usize + data_size);
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf,metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf,data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                let enc_data = data.encode_into_vec().map_err(CodecError::from)?;
+                buf.extend_from_slice(&enc_data.as_slice());
+                Ok(buf.into())
+            },
+            InterProcessMessage::Serialized { metadata, bytes} => {
+                let mut buf = Vec::new();
+                let metadata_size = bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = bytes.len();
+                buf.reserve(HEADER_SIZE + metadata_size as usize + data_size);
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf,metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf,data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                let enc_data = bytes.to_vec();
+                buf.extend_from_slice(&enc_data.as_slice());
+                Ok(buf.into())
+            }
+        }
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_rbuf(buf: &zenoh::net::RBuf) -> Result<Self, CodecError> {
+        const HEADER_SIZE: usize = 8;
+
+        let mut buf: BytesMut = BytesMut::from(&buf.to_vec()[..]);
+        if buf.len() >= HEADER_SIZE {
+            let header = buf.split_to(HEADER_SIZE);
+            let metadata_size = NetworkEndian::read_u32(&header[0..4]) as usize;
+            let data_size = NetworkEndian::read_u32(&header[4..8]) as usize;
+
+            if buf.len() < metadata_size {
+                return Err(CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))));
+            }
+            let metadata_bytes = buf.split_to(metadata_size);
+            let metadata: MessageMetadata =
+                bincode::deserialize(&metadata_bytes).map_err(CodecError::BincodeError)?;
+
+            if buf.len() < data_size {
+                return Err(CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))));
+            }
+
+            let bytes = buf.split_to(data_size);
+            let msg = InterProcessMessage::new_serialized(bytes, metadata);
+            Ok(msg)
+        } else {
+            Err(CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))))
+        }
+    }
+}
+
+impl std::fmt::Debug for InterProcessMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterProcessMessage::Deserialized{metadata, data:_} => {
+                f.debug_struct("InterProcessMessage")
+                .field("Kind:", &"Deserialized".to_string())
+                .field("Metadata", metadata)
+                .finish()
+            },
+            InterProcessMessage::Serialized{metadata, bytes} => {
+                f.debug_struct("InterProcessMessage")
+                .field("Kind", &"Serialized".to_string())
+                .field("Metadata", metadata)
+                .field("Bytes", bytes)
+                .finish()
+            }
         }
     }
 }
@@ -154,9 +256,11 @@ async fn connect_to_node(
 ) -> Result<TcpStream, std::io::Error> {
     // Keeps on reatying to connect to `dst_addr` until it succeeds.
     let mut last_err_msg_time = Instant::now();
+    // println!("=== NODE ===  {:?} o-> {:?}", node_id, dst_addr);
     loop {
         match TcpStream::connect(dst_addr).await {
             Ok(mut stream) => {
+                // println!("=== NODE ===  {:?} <---> {:?}", node_id, dst_addr);
                 stream.set_nodelay(true).expect("couldn't disable Nagle");
                 // Send the node id so that the TCP server knows with which
                 // node the connection was established.

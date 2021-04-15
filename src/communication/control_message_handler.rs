@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap};
 
 use slog::{self, Logger};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};

@@ -154,6 +154,11 @@
 #![feature(specialization)]
 #![feature(box_into_pin)]
 
+
+// Compile error if more transport features are enabled at once
+#[cfg(all(feature = "tcp_transport", feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+compile_error!("Only one from feature \"tcp_transport\", feature \"zenoh_transport\" and, feature \"zenoh_zerocopy_transport\" can be enabled at any time!");
+
 // Re-exports of libraries used in macros.
 #[doc(hidden)]
 pub use ::slog;
@@ -250,8 +255,15 @@ pub fn reset() {
 }
 
 lazy_static! {
-    static ref TERMINAL_LOGGER: Logger =
-        Logger::root(std::sync::Mutex::new(term_full()).fuse(), slog::o!());
+    static ref TERMINAL_LOGGER: Logger = {
+        let drain = std::sync::Mutex::new(term_full()).fuse();
+        // let drain = slog_async::Async::new(drain).build().fuse();
+        // let drain = AtomicSwitch::new(drain);
+        // let decorator = slog_term::TermDecorator::new().build();
+        // let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        // let drain = slog_async::Async::new(drain).build().fuse();
+        Logger::root(drain, slog::o!())
+    };
 }
 
 /// Returns a logger that prints messages to the console.

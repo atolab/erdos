@@ -8,20 +8,25 @@ use futures::future;
 use futures_util::stream::StreamExt;
 use slog;
 use tokio::{
-    net::TcpStream,
     runtime::Builder,
     sync::{
         mpsc::{self, Receiver, Sender, UnboundedReceiver},
         Mutex,
     },
 };
+
+#[cfg(feature = "tcp_transport")]
+use tokio::net::TcpStream;
+#[cfg(feature = "tcp_transport")]
 use tokio_util::codec::Framed;
+#[cfg(feature = "tcp_transport")]
+use crate::communication::{ControlMessageCodec, MessageCodec};
 
 use crate::communication::{
     self,
     receivers::{self, ControlReceiver, DataReceiver},
     senders::{self, ControlSender, DataSender},
-    ControlMessage, ControlMessageCodec, ControlMessageHandler, MessageCodec,
+    ControlMessage, ControlMessageHandler,
 };
 use crate::dataflow::graph::{default_graph, Graph};
 use crate::scheduler::{
@@ -130,10 +135,77 @@ impl Node {
         *started = true;
         cvar.notify_all();
 
-        slog::debug!(self.config.logger, "Node {}: done initializing.", self.id);
+        // slog::debug!(self.config.logger, "Node {}: done initializing.", self.id);
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    async fn get_control_streams(
+        &mut self,
+        zsession: Arc<zenoh::net::Session>,
+        nodes : Vec<NodeId>,
+    ) -> (Vec<ControlSender>, Vec<ControlReceiver>) {
+        let mut control_receivers = Vec::new();
+        let mut control_senders = Vec::new();
+
+        for node_id in nodes {
+            control_receivers.push(
+                ControlReceiver::new(
+                    node_id,
+                    self.id,
+                    zsession.clone(),
+                    &mut self.control_handler
+                )
+            );
+
+            control_senders.push(
+                ControlSender::new(
+                    node_id,
+                    self.id,
+                    zsession.clone(),
+                    &mut self.control_handler
+                )
+            );
+        }
+        (control_senders, control_receivers)
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    async fn get_data_streams(
+        &mut self,
+        zsession: Arc<zenoh::net::Session>,
+        nodes : Vec<NodeId>,
+    ) -> (Vec<DataSender>, Vec<DataReceiver>) {
+        let mut data_receivers = Vec::new();
+        let mut data_senders = Vec::new();
+
+        for node_id in nodes {
+            data_receivers.push(
+                DataReceiver::new(
+                    node_id,
+                    self.id,
+                    zsession.clone(),
+                    self.channels_to_receivers.clone(),
+                    &mut self.control_handler
+                )
+                .await
+            );
+
+            data_senders.push(
+                DataSender::new(
+                    node_id,
+                    self.id,
+                    zsession.clone(),
+                    self.channels_to_senders.clone(),
+                    &mut self.control_handler
+                )
+                .await
+            );
+        }
+        (data_senders, data_receivers)
     }
 
     /// Splits a vector of TCPStreams into `DataSender`s and `DataReceiver`s.
+    #[cfg(feature = "tcp_transport")]
     async fn split_data_streams(
         &mut self,
         mut streams: Vec<(NodeId, TcpStream)>,
@@ -170,6 +242,7 @@ impl Node {
     }
 
     /// Splits a vector of TCPStreams into `ControlMessageHandler`, `ControlSender`s and `ControlReceiver`s.
+    #[cfg(feature = "tcp_transport")]
     async fn split_control_streams(
         &mut self,
         streams: Vec<(NodeId, TcpStream)>,
@@ -319,6 +392,7 @@ impl Node {
 
         let mut join_handles = Vec::with_capacity(num_local_operators);
         for operator_info in local_operators {
+
             let name = operator_info
                 .name
                 .clone()
@@ -367,26 +441,68 @@ impl Node {
         Ok(())
     }
 
+
     async fn async_run(&mut self) {
+
         // Assign values used later to avoid lifetime errors.
         let num_nodes = self.config.data_addresses.len();
         let logger = self.config.logger.clone();
+
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let zconfig = zenoh::net::config::peer();
+
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let zsession = Arc::new(zenoh::net::open(zconfig).await.unwrap());
+
+        // Spawning a task that can reply to evals, needed to verify the node are discovered
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let (ztx, mut zrx) = mpsc::channel(1);
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let self_id = self.id.clone();
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let z_handler_session = zsession.clone();
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let z_handler_fut = tokio::task::spawn(async move {
+            query_handler(z_handler_session, self_id, ztx).await
+        });
+
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        zrx.recv().await;
+
+        // Wait zenoh scouting
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        wait_zenoh_nodes_discovered(num_nodes, self.id, zsession.clone()).await.unwrap();
+
         // Create TCPStreams between all node pairs.
+        #[cfg(feature = "tcp_transport")]
         let control_streams = communication::create_tcp_streams(
             self.config.control_addresses.clone(),
             self.id,
             &self.config.logger,
         )
         .await;
+
+        #[cfg(feature = "tcp_transport")]
         let data_streams = communication::create_tcp_streams(
             self.config.data_addresses.clone(),
             self.id,
             &self.config.logger,
         )
         .await;
-        let (control_senders, control_receivers) =
-            self.split_control_streams(control_streams).await;
+
+        #[cfg(feature = "tcp_transport")]
+        let (control_senders, control_receivers) = self.split_control_streams(control_streams).await;
+
+        #[cfg(feature = "tcp_transport")]
         let (senders, receivers) = self.split_data_streams(data_streams).await;
+
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let (control_senders, control_receivers) = self.get_control_streams(zsession.clone(), get_nodes_ids(num_nodes, self.id)).await;
+
+        #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+        let (senders, receivers) = self.get_data_streams(zsession.clone(), get_nodes_ids(num_nodes, self.id)).await;
+
+
         // Listen for shutdown message.
         let mut shutdown_rx = self.shutdown_rx.take().unwrap();
         let shutdown_fut = shutdown_rx.recv();
@@ -405,7 +521,7 @@ impl Node {
                 senders_fut,
                 recvs_fut,
                 control_senders_fut,
-                control_recvs_fut
+                control_recvs_fut,
             ) {
                 slog::error!(
                     logger,
@@ -413,6 +529,8 @@ impl Node {
                     e
                 );
             }
+
+            #[cfg(feature = "tcp_transport")]
             tokio::select! {
                 Err(e) = ops_fut => slog::error!(
                     logger,
@@ -420,7 +538,20 @@ impl Node {
                 ),
                 _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
             }
+
+            #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+            tokio::select! {
+                Err(e) = ops_fut => slog::error!(
+                    logger,
+                    "Error running operators on node {:?}: {:?}", self.id, e
+                ),
+                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+                _ = z_handler_fut => slog::debug!(logger, "Node {}: shutting down Zenoh Query Handler", self.id),
+            }
+
         } else {
+
+            #[cfg(feature = "tcp_transport")]
             tokio::select! {
                 Err(e) = senders_fut => slog::error!(logger, "Error with data senders: {:?}", e),
                 Err(e) = recvs_fut => slog::error!(logger, "Error with data receivers: {:?}", e),
@@ -435,8 +566,86 @@ impl Node {
                 ),
                 _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
             }
+
+            #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+            tokio::select! {
+                Err(e) = senders_fut => slog::error!(logger, "Error with data senders: {:?}", e),
+                Err(e) = recvs_fut => slog::error!(logger, "Error with data receivers: {:?}", e),
+                Err(e) = control_senders_fut => slog::error!(logger, "Error with control senders: {:?}", e),
+                Err(e) = control_recvs_fut => slog::error!(
+                    self.config.logger,
+                    "Error with control receivers: {:?}", e
+                ),
+                Err(e) = ops_fut => slog::error!(
+                    logger,
+                    "Error running operators on node {:?}: {:?}", self.id, e
+                ),
+                _ = shutdown_fut => slog::debug!(logger, "Node {}: shutting down", self.id),
+                _ = z_handler_fut => slog::debug!(logger, "Node {}: shutting down Zenoh Query Handler", self.id),
+            }
         }
     }
+}
+
+#[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+async fn query_handler(zsession: Arc<zenoh::net::Session>, id : NodeId, mut tx: Sender<()>) {
+    let path = format!("/{}/info", id);
+    let value = format!("{}", id);
+    let mut queryable = zsession
+        .declare_queryable(&path.clone().into(), zenoh::net::queryable::EVAL)
+        .await
+        .unwrap();
+    tx.send(()).await.unwrap();
+
+    while let Some(zquery) = queryable.stream().next().await {
+        zquery.reply(zenoh::net::Sample{
+                res_name: path.clone(),
+                payload: value.as_bytes().into(),
+                data_info: None,
+            }).await;
+    }
+}
+
+#[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+async fn wait_zenoh_nodes_discovered(total_nodes : usize, node_id: NodeId, zsession: Arc<zenoh::net::Session>) -> Result<Vec<NodeId>,communication::CommunicationError>{
+    let mut nodes = vec![];
+    let mut n = 0;
+    while nodes.len() < (total_nodes -1) {
+        if n != node_id {
+            let path = format!("/{}/info", n);
+            let mut replies = zsession
+            .query(
+                &path.into(),
+                "",
+                zenoh::net::protocol::core::QueryTarget::default(),
+                zenoh::net::protocol::core::QueryConsolidation::default())
+            .await
+            .map_err(communication::CommunicationError::from)?;
+            if let Some(reply) = replies.next().await {
+                let z_data = reply.data.payload.to_vec();
+                let s_id = String::from_utf8_lossy(&z_data);
+                let id = s_id.parse::<usize>().map_err(|_| communication::CommunicationError::DeserializeNotImplemented)?;
+                nodes.push(id);
+                n += 1;
+            } else {
+                std::hint::spin_loop();
+            }
+        } else {
+            n += 1;
+        }
+    }
+    Ok(nodes)
+}
+
+#[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+fn get_nodes_ids(total_nodes: usize, node_id : NodeId) -> Vec<NodeId> {
+    let mut nodes = vec![];
+    for n in 0..total_nodes {
+        if n != node_id {
+            nodes.push(n);
+        }
+    }
+    nodes
 }
 
 /// Handle to a [`Node`] running asynchronously.

@@ -6,7 +6,7 @@ and one uses the non-blocking try_read() call.
 
 import erdos
 import time
-
+import sys
 
 class SendOp(erdos.Operator):
     def __init__(self, write_stream):
@@ -29,7 +29,6 @@ class SendOp(erdos.Operator):
 
 class CallbackOp(erdos.Operator):
     def __init__(self, read_stream):
-        print("initializing  op")
         read_stream.add_callback(CallbackOp.callback)
 
     @staticmethod
@@ -76,8 +75,10 @@ def main():
     erdos.connect(CallbackOp, erdos.OperatorConfig(), [count_stream])
     erdos.connect(PullOp, erdos.OperatorConfig(), [count_stream])
     erdos.connect(TryPullOp, erdos.OperatorConfig(), [count_stream])
-
-    erdos.run()
+    if len(sys.argv) >= 2:
+        erdos.run(sys.argv[1])
+    else:
+        erdos.run()
 
 
 if __name__ == "__main__":

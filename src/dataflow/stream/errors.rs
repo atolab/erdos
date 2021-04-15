@@ -73,6 +73,11 @@ impl From<CommunicationError> for WriteStreamError {
                 eprintln!("Got write stream IOError {}", io_error);
                 WriteStreamError::IOError
             }
+            #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+            CommunicationError::ZenohError(zenoh_error) => {
+                eprintln!("Got write stream ZenohError {}", zenoh_error);
+                WriteStreamError::IOError
+            }
         }
     }
 }

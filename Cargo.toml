@@ -34,7 +34,10 @@ slog-term = "2.4.2"
 tokio = { version = "0.2.22", features = ["sync", "tcp", "io-util", "rt-core", "rt-threaded", "time", "macros", "stream", "blocking"] }
 tokio-util = { version = "0.3.1", features = ["codec"] }
 tokio-serde-bincode = "0.2"
-uuid = { version = "0.7", features = ["v4", "v5", "serde"] }
+uuid = { version = "0.8", features = ["v4", "v5", "serde"] }
+
+zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", branch = "master", optional = true }
+
 
 [build-dependencies]
 slog = "2.4.2"
@@ -46,8 +49,11 @@ criterion-macro = "0.3.3"
 nix = "0.17.0"
 
 [features]
-default = []
 python = ["pyo3"]  # Target python with 'cargo build --features=python
+zenoh_transport = ["zenoh"]
+zenoh_zerocopy_transport = ["zenoh"]
+tcp_transport = []
+default = ["zenoh_transport"]
 
 [lib]
 crate-type=["rlib", "cdylib"]   # Required for python

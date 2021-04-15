@@ -18,6 +18,9 @@ pub enum CommunicationError {
     BincodeError(bincode::Error),
     /// Failed to read/write data from/to the TCP stream.
     IoError(io::Error),
+    /// Error from Zenoh layer
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    ZenohError(zenoh::ZError),
 }
 
 impl From<bincode::Error> for CommunicationError {
@@ -59,6 +62,13 @@ impl From<CodecError> for CommunicationError {
             CodecError::IoError(e) => CommunicationError::IoError(e),
             CodecError::BincodeError(e) => CommunicationError::BincodeError(e),
         }
+    }
+}
+
+#[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+impl From<zenoh::ZError> for CommunicationError {
+    fn from(e: zenoh::ZError) -> Self {
+        CommunicationError::ZenohError(e)
     }
 }
 
