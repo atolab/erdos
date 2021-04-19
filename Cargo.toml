@@ -52,7 +52,7 @@ python = ["pyo3"]  # Target python with 'cargo build --features=python
 zenoh_transport = ["zenoh"]
 zenoh_zerocopy_transport = ["zenoh"]
 tcp_transport = []
-default = ["zenoh_zerocopy_transport"]
+default = ["zenoh_transport"]
 
 [lib]
 crate-type=["rlib", "cdylib"]   # Required for python
