@@ -6,7 +6,7 @@ use std::{
     io::{Error, ErrorKind},
 };
 
-use crate::communication::{CommunicationError, CodecError};
+use crate::communication::{CodecError, CommunicationError};
 
 /// Wrapper around a deserialized message. The wrapper can either own the deserialized
 /// message or store a reference to it.
@@ -42,7 +42,6 @@ where
         Ok(bincode::serialize(&self).map_err(CodecError::from)?)
     }
 
-
     default fn serialized_size(&self) -> Result<usize, CommunicationError> {
         bincode::serialized_size(&self)
             .map(|x| x as usize)
@@ -69,15 +68,17 @@ where
         unsafe { encode(self, &mut writer).map_err(CommunicationError::AbomonationError) }
     }
 
-
     fn encode_into_vec(&self) -> Result<Vec<u8>, CodecError> {
         let mut serialized_msg: Vec<u8> = Vec::with_capacity(measure(self));
         unsafe {
             encode(self, &mut serialized_msg)
                 .map_err(CommunicationError::AbomonationError)
-                .map_err(|e|
-                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!("{:?}",e))))
-                )?;
+                .map_err(|e| {
+                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!(
+                        "{:?}",
+                        e
+                    ))))
+                })?;
         }
         Ok(serialized_msg)
     }
@@ -140,7 +141,9 @@ where
                 match decode::<D>(buf.as_mut()) {
                     Some(msg) => msg,
                     None => {
-                        return Err(CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))))
+                        return Err(CodecError::BincodeError(Box::new(
+                            bincode::ErrorKind::Custom("Malformed message".to_string()),
+                        )))
                     }
                 }
             }

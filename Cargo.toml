@@ -38,7 +38,6 @@ uuid = { version = "0.8", features = ["v4", "v5", "serde"] }
 
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", branch = "master", optional = true }
 
-
 [build-dependencies]
 slog = "2.4.2"
 slog-term = "2.4.2"
@@ -53,7 +52,7 @@ python = ["pyo3"]  # Target python with 'cargo build --features=python
 zenoh_transport = ["zenoh"]
 zenoh_zerocopy_transport = ["zenoh"]
 tcp_transport = []
-default = ["zenoh_transport"]
+default = ["zenoh_zerocopy_transport"]
 
 [lib]
 crate-type=["rlib", "cdylib"]   # Required for python
