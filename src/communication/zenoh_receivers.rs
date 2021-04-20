@@ -67,7 +67,6 @@ impl ZenohDataReceiver {
         }
     }
 
-
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
         //Create the Zenoh subscription
         let sub_info = zenoh::net::SubInfo {

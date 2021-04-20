@@ -182,8 +182,11 @@ impl InterProcessMessage {
                 let tot_len = HEADER_SIZE + metadata_size as usize + data_size;
                 buf.reserve(tot_len);
 
-                // TODO: add From<ShmemError> for CodecError
-                let mut sbuf = shm.alloc(tot_len).unwrap();
+                let mut sbuf = shm
+                    .alloc(tot_len)
+                    .ok_or(CodecError::ZenohSharedMemoryError(
+                        "Unable to allocate Buffer".to_string(),
+                    ))?;
 
                 let slice = unsafe { sbuf.as_mut_slice() };
 
@@ -206,7 +209,11 @@ impl InterProcessMessage {
 
                 buf.reserve(tot_len);
 
-                let mut sbuf = shm.alloc(tot_len).unwrap();
+                let mut sbuf = shm
+                    .alloc(tot_len)
+                    .ok_or(CodecError::ZenohSharedMemoryError(
+                        "Unable to allocate Buffer".to_string(),
+                    ))?;
 
                 let slice = unsafe { sbuf.as_mut_slice() };
 
@@ -265,9 +272,14 @@ impl InterProcessMessage {
     ) -> Result<Self, CodecError> {
         const HEADER_SIZE: usize = 8;
 
-        let sbuf = buf.into_shm(shm).unwrap();
+        let sbuf = buf.into_shm(shm).ok_or(CodecError::ZenohSharedMemoryError(
+            "Unable to allocate Buffer".to_string(),
+        ))?;
 
         let mut buf: BytesMut = BytesMut::from(sbuf.as_slice());
+
+        // Shared memory is not more needed
+        drop(sbuf);
 
         if buf.len() >= HEADER_SIZE {
             let header = buf.split_to(HEADER_SIZE);
@@ -291,6 +303,7 @@ impl InterProcessMessage {
 
             let bytes = buf.split_to(data_size);
             let msg = InterProcessMessage::new_serialized(bytes, metadata);
+            
             Ok(msg)
         } else {
             Err(CodecError::BincodeError(Box::new(

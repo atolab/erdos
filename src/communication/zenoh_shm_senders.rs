@@ -13,10 +13,10 @@ use tokio::{
 use zenoh::net;
 
 #[cfg(feature = "zenoh_zerocopy_transport")]
-static SHM_SIZE: usize = 16_777_216; //16M
+static SHM_SIZE: usize = (512 * 1024 * 1024); //32M
 
 use crate::communication::{
-    CommunicationError, ControlMessage, ControlMessageHandler, InterProcessMessage,
+    CodecError, CommunicationError, ControlMessage, ControlMessageHandler, InterProcessMessage,
 };
 use crate::node::NodeId;
 use crate::scheduler::endpoints_manager::ChannelsToSenders;
@@ -69,41 +69,65 @@ impl ZenohShmDataSender {
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
+
+        let id = format!("from-{}-to-{}-data", self.self_node_id, self.node_id);
+
+        let mut shm =
+            zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).map_err(CommunicationError::from)?;
+
+        let res_name = format!("/from/{}/to/{}/data", self.self_node_id, self.node_id);
+
+        let reskey = zenoh::net::protocol::core::ResKey::RId(
+            self.zsession
+                .declare_resource(&res_name.into())
+                .await
+                .map_err(CommunicationError::from)?,
+        );
+        let _publ = self
+            .zsession
+            .declare_publisher(&reskey)
+            .await
+            .map_err(CommunicationError::from)?;
+
+        let mut k: u64 = 0;
+
         // Notify [`ControlMessageHandler`] that sender is initialized.
         self.control_tx
             .send(ControlMessage::DataSenderInitialized(self.node_id))
             .map_err(CommunicationError::from)?;
 
-        let id = self.zsession.id().await;
-
-        // TODO: add From<ShmemError> for CommunicationError
-        let mut shm = zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).unwrap();
+       
 
         // TODO: listen on control_rx?
         loop {
             match self.rx.recv().await {
                 Some(msg) => {
+                    k += 1;
+
+                    if k % 256 == 0 {
+                        shm.garbage_collect();
+                    }
                     // Sending over Zenoh-net
 
-                    let res_name = format!("/from/{}/to/{}/data", self.self_node_id, self.node_id);
+                    let sbuf = loop {
+                        match msg.into_sbuf(&mut shm) {
+                            Ok(buf) => break Ok(buf),
+                            Err(CodecError::ZenohSharedMemoryError(e)) => {
+                                println!(
+                                    "### Unable to allocate on DataSender - Manager: {:?} {}",
+                                    shm, e
+                                );
+                                tokio::time::delay_for(tokio::time::Duration::from_millis(500))
+                                    .await;
+                                shm.garbage_collect();
+                            }
+                            Err(e) => break Err(e),
+                        }
+                    }?;
 
-                    let reskey = zenoh::net::protocol::core::ResKey::RId(
-                        self.zsession
-                            .declare_resource(&res_name.into())
-                            .await
-                            .map_err(CommunicationError::from)?,
-                    );
-                    let _publ = self
-                        .zsession
-                        .declare_publisher(&reskey)
-                        .await
-                        .map_err(CommunicationError::from)?;
-
-                    let sbuf = msg.into_sbuf(&mut shm).map_err(CommunicationError::from)?;
+                    // let sbuf = msg.into_sbuf(&mut shm).map_err(CommunicationError::from)?;
 
                     let rbf = zenoh::net::RBuf::from(sbuf);
-
-                    println!(">>>>> Zenoh Sending RBuf: {:?}", rbf);
 
                     if let Err(e) = self
                         .zsession

@@ -37,6 +37,7 @@ tokio-serde-bincode = "0.2"
 uuid = { version = "0.8", features = ["v4", "v5", "serde"] }
 
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", branch = "master", optional = true }
+shared_memory = { version  = "0.11.4", optional = true} 
 
 [build-dependencies]
 slog = "2.4.2"
@@ -50,7 +51,7 @@ nix = "0.17.0"
 [features]
 python = ["pyo3"]  # Target python with 'cargo build --features=python
 zenoh_transport = ["zenoh"]
-zenoh_zerocopy_transport = ["zenoh"]
+zenoh_zerocopy_transport = ["zenoh", "shared_memory"]
 tcp_transport = []
 default = ["zenoh_transport"]
 

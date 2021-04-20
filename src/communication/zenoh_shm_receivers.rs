@@ -10,11 +10,12 @@ use tokio::sync::{
 use zenoh::net;
 
 #[cfg(feature = "zenoh_zerocopy_transport")]
-static SHM_SIZE: usize = 33_554_432; //32M
+static SHM_SIZE: usize = (512 * 1024 * 1024);
 
 use crate::{
     communication::{
-        CommunicationError, ControlMessage, ControlMessageHandler, InterProcessMessage, PusherT,
+        CodecError, CommunicationError, ControlMessage, ControlMessageHandler, InterProcessMessage,
+        PusherT,
     },
     dataflow::stream::StreamId,
     node::NodeId,
@@ -71,10 +72,11 @@ impl ZenohShmDataReceiver {
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
-        let id = self.zsession.id().await;
 
-        // TODO: add From<ShmemError> for CommunicationError
-        let mut shm = zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).unwrap();
+        let id = format!("from-{}-to-{}-data", self.node_id, self.self_node_id);
+
+        let mut shm =
+            zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).map_err(CommunicationError::from)?;
 
         //Create the Zenoh subscription
         let sub_info = zenoh::net::SubInfo {
@@ -100,9 +102,22 @@ impl ZenohShmDataReceiver {
 
         let z_sub_stream = subscriber.stream();
         while let Some(zres) = z_sub_stream.next().await {
-            println!("<<<<<< Zenoh Received RBuf: {:?}", zres.payload);
+            //let m = InterProcessMessage::from_sbuf(zres.payload, &mut shm);
 
-            let m = InterProcessMessage::from_sbuf(zres.payload, &mut shm);
+            let m = loop {
+                match InterProcessMessage::from_sbuf(zres.payload.clone(), &mut shm) {
+                    Ok(msg) => break Ok(msg),
+                    Err(CodecError::ZenohSharedMemoryError(e)) => {
+                        println!(
+                            "### Unable to allocate on DataReceiver - Manager: {:?} {}",
+                            shm, e
+                        );
+                        tokio::time::delay_for(tokio::time::Duration::from_millis(500)).await;
+                        shm.garbage_collect();
+                    }
+                    Err(e) => break Err(e),
+                }
+            };
 
             match m {
                 // Push the message to the listening operator executors.
