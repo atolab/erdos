@@ -12,9 +12,6 @@ use tokio::{
 #[cfg(feature = "zenoh_zerocopy_transport")]
 use zenoh::net;
 
-#[cfg(feature = "zenoh_zerocopy_transport")]
-static SHM_SIZE: usize = (512 * 1024 * 1024); //32M
-
 use crate::communication::{
     CodecError, CommunicationError, ControlMessage, ControlMessageHandler, InterProcessMessage,
 };
@@ -70,10 +67,10 @@ impl ZenohShmDataSender {
 
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
 
-        let id = format!("from-{}-to-{}-data", self.self_node_id, self.node_id);
+        let id = format!("from-{}-to-{}-data-{}", self.self_node_id, self.node_id, self.zsession.id().await);
 
         let mut shm =
-            zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).map_err(CommunicationError::from)?;
+            zenoh::net::SharedMemoryManager::new(id, crate::SHM_SIZE).map_err(CommunicationError::from)?;
 
         let res_name = format!("/from/{}/to/{}/data", self.self_node_id, self.node_id);
 
@@ -96,7 +93,7 @@ impl ZenohShmDataSender {
             .send(ControlMessage::DataSenderInitialized(self.node_id))
             .map_err(CommunicationError::from)?;
 
-       
+
 
         // TODO: listen on control_rx?
         loop {

@@ -97,9 +97,15 @@ pub struct MessageMetadata {
 
 #[derive(Clone)]
 pub enum InterProcessMessage {
+    #[cfg(feature = "tcp_transport")]
     Serialized {
         metadata: MessageMetadata,
         bytes: BytesMut,
+    },
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    Serialized {
+        metadata: MessageMetadata,
+        bytes: zenoh::net::protocol::io::ArcSlice,
     },
     Deserialized {
         metadata: MessageMetadata,
@@ -108,8 +114,14 @@ pub enum InterProcessMessage {
 }
 
 impl InterProcessMessage {
+    #[cfg(feature = "tcp_transport")]
     pub fn new_serialized(bytes: BytesMut, metadata: MessageMetadata) -> Self {
         Self::Serialized { metadata, bytes }
+    }
+
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    pub fn new_serialized(bytes: zenoh::net::protocol::io::ArcSlice, metadata: MessageMetadata) -> Self {
+        Self::Serialized { metadata, bytes}
     }
 
     pub fn new_deserialized(
@@ -153,8 +165,8 @@ impl InterProcessMessage {
                 WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
                 WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
                 bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
-                let enc_data = bytes.to_vec();
-                buf.extend_from_slice(&enc_data.as_slice());
+                let enc_data = bytes.as_slice();
+                buf.extend_from_slice(&enc_data);
                 Ok(buf.into())
             }
         }
@@ -220,8 +232,7 @@ impl InterProcessMessage {
                 WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
                 WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
                 bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
-                let enc_data = bytes.to_vec();
-                buf.extend_from_slice(&enc_data.as_slice());
+                buf.extend_from_slice(&bytes.as_slice());
 
                 slice[0..tot_len].copy_from_slice(&buf.as_slice());
                 Ok(sbuf)
@@ -230,38 +241,19 @@ impl InterProcessMessage {
     }
 
     #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
-    pub fn from_rbuf(buf: &zenoh::net::RBuf) -> Result<Self, CodecError> {
-        const HEADER_SIZE: usize = 8;
+    pub fn from_rbuf(rbuf: &zenoh::net::RBuf) -> Result<Self, CodecError> {
 
-        let mut buf: BytesMut = BytesMut::from(&buf.to_vec()[..]);
-
-        if buf.len() >= HEADER_SIZE {
-            let header = buf.split_to(HEADER_SIZE);
-            let metadata_size = NetworkEndian::read_u32(&header[0..4]) as usize;
-            let data_size = NetworkEndian::read_u32(&header[4..8]) as usize;
-
-            if buf.len() < metadata_size {
-                return Err(CodecError::BincodeError(Box::new(
-                    bincode::ErrorKind::Custom("Malformed message".to_string()),
-                )));
+        match rbuf.as_slices().len() {
+            1 => {
+                let buf = rbuf.get_slice(0).ok_or(
+                        CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))))?
+                    .as_slice();
+                    Self::from_slice(buf)
+            },
+            _ => {
+                let buf = &rbuf.to_vec();
+                Self::from_slice(buf)
             }
-            let metadata_bytes = buf.split_to(metadata_size);
-            let metadata: MessageMetadata =
-                bincode::deserialize(&metadata_bytes).map_err(CodecError::BincodeError)?;
-
-            if buf.len() < data_size {
-                return Err(CodecError::BincodeError(Box::new(
-                    bincode::ErrorKind::Custom("Malformed message".to_string()),
-                )));
-            }
-
-            let bytes = buf.split_to(data_size);
-            let msg = InterProcessMessage::new_serialized(bytes, metadata);
-            Ok(msg)
-        } else {
-            Err(CodecError::BincodeError(Box::new(
-                bincode::ErrorKind::Custom("Malformed message".to_string()),
-            )))
         }
     }
 
@@ -270,40 +262,56 @@ impl InterProcessMessage {
         buf: zenoh::net::RBuf,
         shm: &mut zenoh::net::SharedMemoryManager,
     ) -> Result<Self, CodecError> {
-        const HEADER_SIZE: usize = 8;
 
-        let sbuf = buf.into_shm(shm).ok_or(CodecError::ZenohSharedMemoryError(
-            "Unable to allocate Buffer".to_string(),
+        let sbuf = buf.into_shm(shm).map_err(|e| CodecError::ZenohSharedMemoryError(
+            format!("Unable to allocate Buffer: {}",e),
         ))?;
 
-        let mut buf: BytesMut = BytesMut::from(sbuf.as_slice());
+        Self::from_slice(sbuf.as_slice())
+    }
 
-        // Shared memory is not more needed
-        drop(sbuf);
-
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_slice(buf : &[u8]) -> Result<Self, CodecError> {
+        const HEADER_SIZE: usize = 8;
         if buf.len() >= HEADER_SIZE {
-            let header = buf.split_to(HEADER_SIZE);
+
+            let header = &buf[0..HEADER_SIZE];
+
             let metadata_size = NetworkEndian::read_u32(&header[0..4]) as usize;
             let data_size = NetworkEndian::read_u32(&header[4..8]) as usize;
 
-            if buf.len() < metadata_size {
+            let metedata_buf = &buf[HEADER_SIZE..HEADER_SIZE+metadata_size];
+
+            if metedata_buf.len() < metadata_size {
                 return Err(CodecError::BincodeError(Box::new(
                     bincode::ErrorKind::Custom("Malformed message".to_string()),
                 )));
             }
-            let metadata_bytes = buf.split_to(metadata_size);
+
+            let metadata_bytes = &buf[HEADER_SIZE..HEADER_SIZE+metadata_size];
             let metadata: MessageMetadata =
                 bincode::deserialize(&metadata_bytes).map_err(CodecError::BincodeError)?;
 
-            if buf.len() < data_size {
+            //let buf = &buf[metadata_size..];
+
+            let data_buf = &buf[HEADER_SIZE+metadata_size..];
+
+            if data_buf.len() < data_size {
                 return Err(CodecError::BincodeError(Box::new(
                     bincode::ErrorKind::Custom("Malformed message".to_string()),
                 )));
             }
 
-            let bytes = buf.split_to(data_size);
+
+
+            let bytes = &buf[HEADER_SIZE+metadata_size..HEADER_SIZE+metadata_size+data_size];
+            // BytesMut::from(&[u8]) makes a copy.
+            // In order to avoid this the InterProcessMessage enum has to be
+            // updated in order to have a Serialized with an Arc to the data bytes
+            //let msg = InterProcessMessage::new_serialized(BytesMut::from(bytes), metadata);
+            let bytes  = zenoh::net::protocol::io::ArcSlice::from(bytes);
             let msg = InterProcessMessage::new_serialized(bytes, metadata);
-            
+
             Ok(msg)
         } else {
             Err(CodecError::BincodeError(Box::new(

@@ -71,19 +71,11 @@ impl ZenohDataSender {
             .send(ControlMessage::DataSenderInitialized(self.node_id))
             .map_err(CommunicationError::from)?;
 
-        #[cfg(feature = "zenoh_zerocopy_transport")]
-        let id = self.zsession.id().await;
-
-        // TODO: add From<ShmemError> for CommunicationError
-        #[cfg(feature = "zenoh_zerocopy_transport")]
-        let mut shm = zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).unwrap();
-
         // TODO: listen on control_rx?
         loop {
             match self.rx.recv().await {
                 Some(msg) => {
                     // Sending over Zenoh-net
-
                     let res_name = format!("/from/{}/to/{}/data", self.self_node_id, self.node_id);
 
                     let reskey = zenoh::net::protocol::core::ResKey::RId(

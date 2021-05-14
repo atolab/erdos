@@ -9,8 +9,7 @@ use tokio::sync::{
 #[cfg(feature = "zenoh_zerocopy_transport")]
 use zenoh::net;
 
-#[cfg(feature = "zenoh_zerocopy_transport")]
-static SHM_SIZE: usize = (512 * 1024 * 1024);
+
 
 use crate::{
     communication::{
@@ -73,10 +72,10 @@ impl ZenohShmDataReceiver {
 
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
 
-        let id = format!("from-{}-to-{}-data", self.node_id, self.self_node_id);
+        let id = format!("from-{}-to-{}-data-{}", self.node_id, self.self_node_id, self.zsession.id().await);
 
         let mut shm =
-            zenoh::net::SharedMemoryManager::new(id, SHM_SIZE).map_err(CommunicationError::from)?;
+            zenoh::net::SharedMemoryManager::new(id, crate::SHM_SIZE).map_err(CommunicationError::from)?;
 
         //Create the Zenoh subscription
         let sub_info = zenoh::net::SubInfo {

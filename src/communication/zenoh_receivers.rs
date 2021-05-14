@@ -92,7 +92,9 @@ impl ZenohDataReceiver {
 
         let z_sub_stream = subscriber.stream();
         while let Some(zres) = z_sub_stream.next().await {
+            // println!("ZenohReceiver, rbuf received {:?}", zres.payload);
             let m = InterProcessMessage::from_rbuf(&zres.payload);
+            // println!("ZenohReceiver, msg received {:?}", m);
 
             match m {
                 // Push the message to the listening operator executors.
@@ -108,13 +110,17 @@ impl ZenohDataReceiver {
                             data: _,
                         } => unreachable!(),
                     };
+
                     match self.stream_id_to_pusher.get_mut(&metadata.stream_id) {
                         Some(pusher) => {
+                            // println!("Sending to pusher {:?}", bytes);
                             if let Err(e) = pusher.send_from_bytes(bytes) {
+                                // println!("Got error from pusher {:?}", e);
                                 return Err(e);
                             }
                         }
                         None => (),
+                        //println!("Receiver does not have any pushers. {:?}", metadata),
                         // panic!(
                         //     "Receiver does not have any pushers. \
                         //         Race condition during data-flow reconfiguration."

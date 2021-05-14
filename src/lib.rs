@@ -276,6 +276,10 @@ pub fn get_terminal_logger() -> slog::Logger {
     TERMINAL_LOGGER.clone()
 }
 
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+static SHM_SIZE: usize = 512 * 1024 * 1024;
+
 /// Defines command line arguments for running a multi-node ERDOS application.
 pub fn new_app(name: &str) -> clap::App {
     App::new(name)

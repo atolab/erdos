@@ -50,6 +50,7 @@ where
 }
 
 /// Specialized version used when messages derive `Abomonation`.
+#[cfg(feature = "tcp_transport")]
 impl<D> Serializable for D
 where
     D: Debug + Clone + Send + Serialize + Abomonation,
@@ -91,6 +92,9 @@ where
 /// Trait automatically derived for all messages that derive `Deserialize`.
 pub trait Deserializable<'a>: Sized {
     fn decode(buf: &'a mut BytesMut) -> Result<DeserializedMessage<'a, Self>, CommunicationError>;
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    fn decode_from_vec(buf: &'a [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError>;
+    #[cfg(feature = "tcp_transport")]
     fn decode_from_vec(buf: &'a mut [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError>;
 }
 
@@ -105,15 +109,23 @@ where
         Ok(DeserializedMessage::Owned(msg))
     }
 
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
     default fn decode_from_vec(
-        buf: &'a mut [u8],
+        buf: &'a [u8],
     ) -> Result<DeserializedMessage<'a, D>, CodecError> {
+        let msg: D = bincode::deserialize(buf).map_err(|e| CodecError::from(e))?;
+        Ok(DeserializedMessage::Owned(msg))
+    }
+
+    #[cfg(feature = "tcp_transport")]
+    default fn decode_from_vec(buf: &'a mut [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError> {
         let msg: D = bincode::deserialize(buf).map_err(|e| CodecError::from(e))?;
         Ok(DeserializedMessage::Owned(msg))
     }
 }
 
 /// Specialized version used when messages derive `Abomonation`.
+#[cfg(feature = "tcp_transport")]
 impl<'a, D> Deserializable<'a> for D
 where
     D: Debug + Clone + Send + Deserialize<'a> + Abomonation,
