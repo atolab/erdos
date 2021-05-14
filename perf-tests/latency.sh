@@ -11,7 +11,7 @@ if test "$#" -ne 3; then
 fi
 
 WD=$1
-TEST="python3 python/examples/throughput.py"
+TEST="python3 python/examples/latency.py"
 TRANSPORT=$2
 N=$3
 
@@ -26,7 +26,7 @@ for s in $SIZE; do
     {
         TS=`eval date "+%F-%T"`
         timeout 60 script -qc "$TEST -p $s -n $N -t $TRANSPORT" > $DATA_PATH/$s.txt &
-        echo "[$TS]: Testing throughput for $s bytes"
+        echo "[$TS]: Testing latency for $s bytes"
         S_PID=$!
         TS=`eval date "+%F-%T"`
         echo "[$TS]: Started Test (PID = $S_PID)"
@@ -38,5 +38,12 @@ for s in $SIZE; do
     echo "[$TS]: Test completed"
     sleep 1
 done
+
+TIME=$TS
+
+echo "kind,scenario,test,name,size,seq_num,rtt" > $DATA_PATH/rtt-$TRANSPORT-$TIME.csv
+
+cat $DATA_PATH/*.txt >> $DATA_PATH/rtt-$TRANSPORT-$TIME.csv
+
 
 deactivate

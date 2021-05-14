@@ -114,10 +114,11 @@ impl ZenohDataReceiver {
                                 return Err(e);
                             }
                         }
-                        None => panic!(
-                            "Receiver does not have any pushers. \
-                                Race condition during data-flow reconfiguration."
-                        ),
+                        None => (),
+                        // panic!(
+                        //     "Receiver does not have any pushers. \
+                        //         Race condition during data-flow reconfiguration."
+                        // ),
                     }
                 }
                 Err(e) => {
