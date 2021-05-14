@@ -107,10 +107,10 @@ impl ZenohShmDataReceiver {
                 match InterProcessMessage::from_sbuf(zres.payload.clone(), &mut shm) {
                     Ok(msg) => break Ok(msg),
                     Err(CodecError::ZenohSharedMemoryError(e)) => {
-                        println!(
-                            "### Unable to allocate on DataReceiver - Manager: {:?} {}",
-                            shm, e
-                        );
+                        // println!(
+                        //     "### Unable to allocate on DataReceiver - Manager: {:?} {}",
+                        //     shm, e
+                        // );
                         tokio::time::delay_for(tokio::time::Duration::from_millis(500)).await;
                         shm.garbage_collect();
                     }

@@ -110,10 +110,10 @@ impl ZenohShmDataSender {
                         match msg.into_sbuf(&mut shm) {
                             Ok(buf) => break Ok(buf),
                             Err(CodecError::ZenohSharedMemoryError(e)) => {
-                                println!(
-                                    "### Unable to allocate on DataSender - Manager: {:?} {}",
-                                    shm, e
-                                );
+                                // println!(
+                                //     "### Unable to allocate on DataSender - Manager: {:?} {}",
+                                //     shm, e
+                                // );
                                 tokio::time::delay_for(tokio::time::Duration::from_millis(500))
                                     .await;
                                 shm.garbage_collect();
