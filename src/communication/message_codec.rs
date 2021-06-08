@@ -39,6 +39,7 @@ impl MessageCodec {
     }
 }
 
+#[cfg(feature = "tcp_transport")]
 impl Decoder for MessageCodec {
     type Item = InterProcessMessage;
     type Error = CodecError;
@@ -101,6 +102,7 @@ impl Decoder for MessageCodec {
     }
 }
 
+#[cfg(feature = "tcp_transport")]
 impl Encoder<InterProcessMessage> for MessageCodec {
     type Error = CodecError;
 

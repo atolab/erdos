@@ -73,6 +73,21 @@ impl From<CommunicationError> for WriteStreamError {
                 eprintln!("Got write stream IOError {}", io_error);
                 WriteStreamError::IOError
             }
+            #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+            CommunicationError::ZenohError(zenoh_error) => {
+                eprintln!("Got write stream ZenohError {}", zenoh_error);
+                WriteStreamError::IOError
+            }
+            #[cfg(feature = "zenoh_zerocopy_transport")]
+            CommunicationError::SharedMemoryError(shm_error) => {
+                eprintln!("Got write stream SharedMemoryError {}", shm_error);
+                WriteStreamError::IOError
+            }
+            #[cfg(feature = "zenoh_zerocopy_transport")]
+            CommunicationError::ZenohSharedMemoryError(zshm_error) => {
+                eprintln!("Got write stream ZenohSharedMemoryError {}", zshm_error);
+                WriteStreamError::IOError
+            }
         }
     }
 }

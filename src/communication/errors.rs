@@ -18,6 +18,14 @@ pub enum CommunicationError {
     BincodeError(bincode::Error),
     /// Failed to read/write data from/to the TCP stream.
     IoError(io::Error),
+    /// Error from Zenoh layer
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    ZenohError(zenoh::ZError),
+    /// Errors from Shared Memory
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    SharedMemoryError(shared_memory::ShmemError),
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    ZenohSharedMemoryError(String),
 }
 
 impl From<bincode::Error> for CommunicationError {
@@ -58,7 +66,29 @@ impl From<CodecError> for CommunicationError {
         match e {
             CodecError::IoError(e) => CommunicationError::IoError(e),
             CodecError::BincodeError(e) => CommunicationError::BincodeError(e),
+            #[cfg(feature = "zenoh_zerocopy_transport")]
+            CodecError::SharedMemoryError(shm_error) => {
+                CommunicationError::SharedMemoryError(shm_error)
+            }
+            #[cfg(feature = "zenoh_zerocopy_transport")]
+            CodecError::ZenohSharedMemoryError(zshm_error) => {
+                CommunicationError::ZenohSharedMemoryError(zshm_error)
+            }
         }
+    }
+}
+
+#[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+impl From<zenoh::ZError> for CommunicationError {
+    fn from(e: zenoh::ZError) -> Self {
+        CommunicationError::ZenohError(e)
+    }
+}
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+impl From<shared_memory::ShmemError> for CommunicationError {
+    fn from(e: shared_memory::ShmemError) -> Self {
+        CommunicationError::SharedMemoryError(e)
     }
 }
 
@@ -69,6 +99,11 @@ pub enum CodecError {
     /// Bincode serialization/deserialization error. It is raised when the `MessageMetadata` serialization
     /// fails. This should not ever happen.
     BincodeError(bincode::Error),
+    /// Error from Shared Memory
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    SharedMemoryError(shared_memory::ShmemError),
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    ZenohSharedMemoryError(String),
 }
 
 impl From<io::Error> for CodecError {
@@ -80,6 +115,13 @@ impl From<io::Error> for CodecError {
 impl From<bincode::Error> for CodecError {
     fn from(e: bincode::Error) -> Self {
         CodecError::BincodeError(e)
+    }
+}
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+impl From<shared_memory::ShmemError> for CodecError {
+    fn from(e: shared_memory::ShmemError) -> Self {
+        CodecError::SharedMemoryError(e)
     }
 }
 

@@ -5,19 +5,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{dataflow::stream::StreamId, node::NodeId, OperatorId};
 use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
 use bytes::BytesMut;
 use futures::future;
 use serde::{Deserialize, Serialize};
 use slog;
+use std::boxed::Box;
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     prelude::*,
     time::delay_for,
 };
-
-use crate::{dataflow::stream::StreamId, node::NodeId, OperatorId};
 
 // Private submodules
 mod control_message_codec;
@@ -29,17 +29,36 @@ mod serializable;
 
 // Crate-wide visible submodules
 pub(crate) mod pusher;
+
+#[cfg(feature = "tcp_transport")]
 pub(crate) mod receivers;
+
+#[cfg(feature = "tcp_transport")]
 pub(crate) mod senders;
+
+#[cfg(feature = "zenoh_transport")]
+pub(crate) mod zenoh_senders;
+
+#[cfg(feature = "zenoh_transport")]
+pub(crate) mod zenoh_receivers;
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+pub(crate) mod zenoh_shm_senders;
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+pub(crate) mod zenoh_shm_receivers;
 
 // Private imports
 use serializable::Serializable;
 
 // Module-wide exports
+#[cfg(feature = "tcp_transport")]
 pub(crate) use control_message_codec::ControlMessageCodec;
+#[cfg(feature = "tcp_transport")]
+pub(crate) use message_codec::MessageCodec;
+
 pub(crate) use control_message_handler::ControlMessageHandler;
 pub(crate) use errors::{CodecError, CommunicationError, TryRecvError};
-pub(crate) use message_codec::MessageCodec;
 pub(crate) use pusher::{Pusher, PusherT};
 
 // Crate-wide exports
@@ -56,6 +75,21 @@ pub enum ControlMessage {
     ControlReceiverInitialized(NodeId),
 }
 
+impl ControlMessage {
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn into_rbuf(&self) -> Result<zenoh::net::RBuf, CodecError> {
+        let serialized_msg = bincode::serialize(&self).map_err(|e| CodecError::from(e))?;
+        Ok(serialized_msg.into())
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_rbuf(buf: &zenoh::net::RBuf) -> Result<ControlMessage, CodecError> {
+        let msg_bytes = buf.to_vec();
+        let msg = bincode::deserialize(&msg_bytes).map_err(|e| CodecError::from(e))?;
+        Ok(msg)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageMetadata {
     pub stream_id: StreamId,
@@ -63,9 +97,15 @@ pub struct MessageMetadata {
 
 #[derive(Clone)]
 pub enum InterProcessMessage {
+    #[cfg(feature = "tcp_transport")]
     Serialized {
         metadata: MessageMetadata,
         bytes: BytesMut,
+    },
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    Serialized {
+        metadata: MessageMetadata,
+        bytes: zenoh::net::protocol::io::ArcSlice,
     },
     Deserialized {
         metadata: MessageMetadata,
@@ -74,8 +114,14 @@ pub enum InterProcessMessage {
 }
 
 impl InterProcessMessage {
+    #[cfg(feature = "tcp_transport")]
     pub fn new_serialized(bytes: BytesMut, metadata: MessageMetadata) -> Self {
         Self::Serialized { metadata, bytes }
+    }
+
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    pub fn new_serialized(bytes: zenoh::net::protocol::io::ArcSlice, metadata: MessageMetadata) -> Self {
+        Self::Serialized { metadata, bytes}
     }
 
     pub fn new_deserialized(
@@ -85,6 +131,210 @@ impl InterProcessMessage {
         Self::Deserialized {
             metadata: MessageMetadata { stream_id },
             data,
+        }
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn into_rbuf(&self) -> Result<zenoh::net::RBuf, CodecError> {
+        const HEADER_SIZE: usize = 8;
+        match self {
+            InterProcessMessage::Deserialized { metadata, data } => {
+                let mut buf = Vec::new();
+                let metadata_size =
+                    bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = data.serialized_size().map_err(|e| {
+                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!(
+                        "{:?}",
+                        e
+                    ))))
+                })?;
+                buf.reserve(HEADER_SIZE + metadata_size as usize + data_size);
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                let enc_data = data.encode_into_vec().map_err(CodecError::from)?;
+                buf.extend_from_slice(&enc_data.as_slice());
+                Ok(buf.into())
+            }
+            InterProcessMessage::Serialized { metadata, bytes } => {
+                let mut buf = Vec::new();
+                let metadata_size =
+                    bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = bytes.len();
+                buf.reserve(HEADER_SIZE + metadata_size as usize + data_size);
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                let enc_data = bytes.as_slice();
+                buf.extend_from_slice(&enc_data);
+                Ok(buf.into())
+            }
+        }
+    }
+
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    pub fn into_sbuf(
+        &self,
+        shm: &mut zenoh::net::SharedMemoryManager,
+    ) -> Result<zenoh::net::SharedMemoryBuf, CodecError> {
+        const HEADER_SIZE: usize = 8;
+        match self {
+            InterProcessMessage::Deserialized { metadata, data } => {
+                let mut buf = Vec::new();
+
+                let metadata_size =
+                    bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = data.serialized_size().map_err(|e| {
+                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!(
+                        "{:?}",
+                        e
+                    ))))
+                })?;
+
+                let tot_len = HEADER_SIZE + metadata_size as usize + data_size;
+                buf.reserve(tot_len);
+
+                let mut sbuf = shm
+                    .alloc(tot_len)
+                    .ok_or(CodecError::ZenohSharedMemoryError(
+                        "Unable to allocate Buffer".to_string(),
+                    ))?;
+
+                let slice = unsafe { sbuf.as_mut_slice() };
+
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                let enc_data = data.encode_into_vec().map_err(CodecError::from)?;
+                buf.extend_from_slice(&enc_data.as_slice());
+
+                slice[0..tot_len].copy_from_slice(&buf.as_slice());
+                Ok(sbuf)
+            }
+            InterProcessMessage::Serialized { metadata, bytes } => {
+                let mut buf = Vec::new();
+                let metadata_size =
+                    bincode::serialized_size(&metadata).map_err(CodecError::from)?;
+                let data_size = bytes.len();
+
+                let tot_len = HEADER_SIZE + metadata_size as usize + data_size;
+
+                buf.reserve(tot_len);
+
+                let mut sbuf = shm
+                    .alloc(tot_len)
+                    .ok_or(CodecError::ZenohSharedMemoryError(
+                        "Unable to allocate Buffer".to_string(),
+                    ))?;
+
+                let slice = unsafe { sbuf.as_mut_slice() };
+
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, metadata_size as u32)?;
+                WriteBytesExt::write_u32::<NetworkEndian>(&mut buf, data_size as u32)?;
+                bincode::serialize_into(&mut buf, &metadata).map_err(CodecError::from)?;
+                buf.extend_from_slice(&bytes.as_slice());
+
+                slice[0..tot_len].copy_from_slice(&buf.as_slice());
+                Ok(sbuf)
+            }
+        }
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_rbuf(rbuf: &zenoh::net::RBuf) -> Result<Self, CodecError> {
+
+        match rbuf.as_slices().len() {
+            1 => {
+                let buf = rbuf.get_slice(0).ok_or(
+                        CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom("Malformed message".to_string()))))?
+                    .as_slice();
+                    Self::from_slice(buf)
+            },
+            _ => {
+                let buf = &rbuf.to_vec();
+                Self::from_slice(buf)
+            }
+        }
+    }
+
+    #[cfg(feature = "zenoh_zerocopy_transport")]
+    pub fn from_sbuf(
+        buf: zenoh::net::RBuf,
+        shm: &mut zenoh::net::SharedMemoryManager,
+    ) -> Result<Self, CodecError> {
+
+        let sbuf = buf.into_shm(shm).map_err(|e| CodecError::ZenohSharedMemoryError(
+            format!("Unable to allocate Buffer: {}",e),
+        ))?;
+
+        Self::from_slice(sbuf.as_slice())
+    }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    pub fn from_slice(buf : &[u8]) -> Result<Self, CodecError> {
+        const HEADER_SIZE: usize = 8;
+        if buf.len() >= HEADER_SIZE {
+
+            let header = &buf[0..HEADER_SIZE];
+
+            let metadata_size = NetworkEndian::read_u32(&header[0..4]) as usize;
+            let data_size = NetworkEndian::read_u32(&header[4..8]) as usize;
+
+            let metedata_buf = &buf[HEADER_SIZE..HEADER_SIZE+metadata_size];
+
+            if metedata_buf.len() < metadata_size {
+                return Err(CodecError::BincodeError(Box::new(
+                    bincode::ErrorKind::Custom("Malformed message".to_string()),
+                )));
+            }
+
+            let metadata_bytes = &buf[HEADER_SIZE..HEADER_SIZE+metadata_size];
+            let metadata: MessageMetadata =
+                bincode::deserialize(&metadata_bytes).map_err(CodecError::BincodeError)?;
+
+            //let buf = &buf[metadata_size..];
+
+            let data_buf = &buf[HEADER_SIZE+metadata_size..];
+
+            if data_buf.len() < data_size {
+                return Err(CodecError::BincodeError(Box::new(
+                    bincode::ErrorKind::Custom("Malformed message".to_string()),
+                )));
+            }
+
+
+
+            let bytes = &buf[HEADER_SIZE+metadata_size..HEADER_SIZE+metadata_size+data_size];
+            // BytesMut::from(&[u8]) makes a copy.
+            // In order to avoid this the InterProcessMessage enum has to be
+            // updated in order to have a Serialized with an Arc to the data bytes
+            //let msg = InterProcessMessage::new_serialized(BytesMut::from(bytes), metadata);
+            let bytes  = zenoh::net::protocol::io::ArcSlice::from(bytes);
+            let msg = InterProcessMessage::new_serialized(bytes, metadata);
+
+            Ok(msg)
+        } else {
+            Err(CodecError::BincodeError(Box::new(
+                bincode::ErrorKind::Custom("Malformed message".to_string()),
+            )))
+        }
+    }
+}
+
+impl std::fmt::Debug for InterProcessMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterProcessMessage::Deserialized { metadata, data: _ } => f
+                .debug_struct("InterProcessMessage")
+                .field("Kind:", &"Deserialized".to_string())
+                .field("Metadata", metadata)
+                .finish(),
+            InterProcessMessage::Serialized { metadata, bytes } => f
+                .debug_struct("InterProcessMessage")
+                .field("Kind", &"Serialized".to_string())
+                .field("Metadata", metadata)
+                .field("Bytes", bytes)
+                .finish(),
         }
     }
 }

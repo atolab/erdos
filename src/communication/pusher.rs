@@ -22,7 +22,10 @@ pub trait PusherT: Send {
     /// To be used to clone a boxed pusher.
     fn box_clone(&self) -> Box<dyn PusherT>;
     /// Creates message from bytes and sends it to endpoints.
+    #[cfg(feature = "tcp_transport")]
     fn send_from_bytes(&mut self, buf: BytesMut) -> Result<(), CommunicationError>;
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    fn send_from_bytes(&mut self, buf: zenoh::net::protocol::io::ArcSlice) -> Result<(), CommunicationError>;
 }
 
 /// Internal structure used to send data on a collection of [`SendEndpoint`]s.
@@ -71,9 +74,24 @@ where
         Box::new((*self).clone())
     }
 
+    #[cfg(feature = "tcp_transport")]
     fn send_from_bytes(&mut self, mut buf: BytesMut) -> Result<(), CommunicationError> {
         if !self.endpoints.is_empty() {
             let msg = match Deserializable::decode(&mut buf)? {
+                DeserializedMessage::<D>::Owned(msg) => msg,
+                DeserializedMessage::<D>::Ref(msg) => msg.clone(),
+            };
+            let msg_arc = Arc::new(msg);
+            self.send(msg_arc)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "zenoh_zerocopy_transport", feature = "zenoh_transport"))]
+    fn send_from_bytes(&mut self, buf: zenoh::net::protocol::io::ArcSlice) -> Result<(), CommunicationError> {
+        let buf = buf.as_slice();
+        if !self.endpoints.is_empty() {
+            let msg = match Deserializable::decode_from_vec(&buf)? {
                 DeserializedMessage::<D>::Owned(msg) => msg,
                 DeserializedMessage::<D>::Ref(msg) => msg.clone(),
             };

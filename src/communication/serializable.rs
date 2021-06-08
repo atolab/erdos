@@ -6,7 +6,7 @@ use std::{
     io::{Error, ErrorKind},
 };
 
-use crate::communication::CommunicationError;
+use crate::communication::{CodecError, CommunicationError};
 
 /// Wrapper around a deserialized message. The wrapper can either own the deserialized
 /// message or store a reference to it.
@@ -20,6 +20,7 @@ pub trait Serializable {
     fn encode(&self) -> Result<BytesMut, CommunicationError>;
     fn encode_into(&self, buffer: &mut BytesMut) -> Result<(), CommunicationError>;
     fn serialized_size(&self) -> Result<usize, CommunicationError>;
+    fn encode_into_vec(&self) -> Result<Vec<u8>, CodecError>;
 }
 
 impl<D> Serializable for D
@@ -37,6 +38,10 @@ where
         bincode::serialize_into(&mut writer, self).map_err(CommunicationError::from)
     }
 
+    default fn encode_into_vec(&self) -> Result<Vec<u8>, CodecError> {
+        Ok(bincode::serialize(&self).map_err(CodecError::from)?)
+    }
+
     default fn serialized_size(&self) -> Result<usize, CommunicationError> {
         bincode::serialized_size(&self)
             .map(|x| x as usize)
@@ -45,6 +50,7 @@ where
 }
 
 /// Specialized version used when messages derive `Abomonation`.
+#[cfg(feature = "tcp_transport")]
 impl<D> Serializable for D
 where
     D: Debug + Clone + Send + Serialize + Abomonation,
@@ -63,6 +69,21 @@ where
         unsafe { encode(self, &mut writer).map_err(CommunicationError::AbomonationError) }
     }
 
+    fn encode_into_vec(&self) -> Result<Vec<u8>, CodecError> {
+        let mut serialized_msg: Vec<u8> = Vec::with_capacity(measure(self));
+        unsafe {
+            encode(self, &mut serialized_msg)
+                .map_err(CommunicationError::AbomonationError)
+                .map_err(|e| {
+                    CodecError::BincodeError(Box::new(bincode::ErrorKind::Custom(format!(
+                        "{:?}",
+                        e
+                    ))))
+                })?;
+        }
+        Ok(serialized_msg)
+    }
+
     fn serialized_size(&self) -> Result<usize, CommunicationError> {
         Ok(abomonation::measure(self))
     }
@@ -71,6 +92,10 @@ where
 /// Trait automatically derived for all messages that derive `Deserialize`.
 pub trait Deserializable<'a>: Sized {
     fn decode(buf: &'a mut BytesMut) -> Result<DeserializedMessage<'a, Self>, CommunicationError>;
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    fn decode_from_vec(buf: &'a [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError>;
+    #[cfg(feature = "tcp_transport")]
+    fn decode_from_vec(buf: &'a mut [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError>;
 }
 
 impl<'a, D> Deserializable<'a> for D
@@ -83,9 +108,24 @@ where
         let msg: D = bincode::deserialize(buf).map_err(|e| CommunicationError::from(e))?;
         Ok(DeserializedMessage::Owned(msg))
     }
+
+    #[cfg(any(feature = "zenoh_transport", feature = "zenoh_zerocopy_transport"))]
+    default fn decode_from_vec(
+        buf: &'a [u8],
+    ) -> Result<DeserializedMessage<'a, D>, CodecError> {
+        let msg: D = bincode::deserialize(buf).map_err(|e| CodecError::from(e))?;
+        Ok(DeserializedMessage::Owned(msg))
+    }
+
+    #[cfg(feature = "tcp_transport")]
+    default fn decode_from_vec(buf: &'a mut [u8]) -> Result<DeserializedMessage<'a, Self>, CodecError> {
+        let msg: D = bincode::deserialize(buf).map_err(|e| CodecError::from(e))?;
+        Ok(DeserializedMessage::Owned(msg))
+    }
 }
 
 /// Specialized version used when messages derive `Abomonation`.
+#[cfg(feature = "tcp_transport")]
 impl<'a, D> Deserializable<'a> for D
 where
     D: Debug + Clone + Send + Deserialize<'a> + Abomonation,
@@ -99,6 +139,22 @@ where
                         return Err(CommunicationError::AbomonationError(Error::new(
                             ErrorKind::Other,
                             "Deserialization failed",
+                        )))
+                    }
+                }
+            }
+        };
+        Ok(DeserializedMessage::Ref(msg))
+    }
+
+    fn decode_from_vec(buf: &'a mut [u8]) -> Result<DeserializedMessage<'a, D>, CodecError> {
+        let (msg, _) = {
+            unsafe {
+                match decode::<D>(buf.as_mut()) {
+                    Some(msg) => msg,
+                    None => {
+                        return Err(CodecError::BincodeError(Box::new(
+                            bincode::ErrorKind::Custom("Malformed message".to_string()),
                         )))
                     }
                 }

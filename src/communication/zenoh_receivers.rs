@@ -6,13 +6,8 @@ use tokio::sync::{
     Mutex,
 };
 
-use futures::stream::SplitStream;
-
-use tokio::net::TcpStream;
-
-use tokio_util::codec::Framed;
-
-use crate::communication::{ControlMessageCodec, MessageCodec};
+#[cfg(feature = "zenoh_transport")]
+use zenoh::net;
 
 use crate::{
     communication::{
@@ -23,13 +18,16 @@ use crate::{
     scheduler::endpoints_manager::ChannelsToReceivers,
 };
 
-/// Listens on a TCP stream, and pushes messages it receives to operator executors.
+/// Listens on a Zenoh Subscriber stream, and pushes messages it receives to operator executors.
 #[allow(dead_code)]
-pub(crate) struct DataReceiver {
+#[cfg(feature = "zenoh_transport")]
+pub(crate) struct ZenohDataReceiver {
     /// The id of the node the stream is receiving data from.
     node_id: NodeId,
-    /// Framed TCP read stream.
-    stream: SplitStream<Framed<TcpStream, MessageCodec>>,
+    /// Self node id
+    self_node_id: NodeId,
+    /// Zenoh Session
+    zsession: Arc<net::Session>,
     /// Channel receiver on which new pusher updates are received.
     rx: UnboundedReceiver<(StreamId, Box<dyn PusherT>)>,
     /// Mapping between stream id to [`PusherT`] trait objects.
@@ -42,10 +40,12 @@ pub(crate) struct DataReceiver {
     control_rx: UnboundedReceiver<ControlMessage>,
 }
 
-impl DataReceiver {
+#[cfg(feature = "zenoh_transport")]
+impl ZenohDataReceiver {
     pub(crate) async fn new(
         node_id: NodeId,
-        stream: SplitStream<Framed<TcpStream, MessageCodec>>,
+        self_node_id: NodeId,
+        zsession: Arc<net::Session>,
         channels_to_receivers: Arc<Mutex<ChannelsToReceivers>>,
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
@@ -58,7 +58,8 @@ impl DataReceiver {
         control_handler.add_channel_to_data_receiver(node_id, control_tx);
         Self {
             node_id,
-            stream,
+            self_node_id,
+            zsession,
             rx,
             stream_id_to_pusher: HashMap::new(),
             control_tx: control_handler.get_channel_to_handler(),
@@ -67,13 +68,35 @@ impl DataReceiver {
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), CommunicationError> {
+        //Create the Zenoh subscription
+        let sub_info = zenoh::net::SubInfo {
+            reliability: zenoh::net::protocol::core::Reliability::Reliable,
+            mode: zenoh::net::protocol::core::SubMode::Push,
+            period: None,
+        };
+
+        let resource_name = format!("/from/{}/to/{}/data", self.node_id, self.self_node_id);
+        let zsession = self.zsession.clone();
+
+        let mut subscriber = zsession
+            .declare_subscriber(&resource_name.into(), &sub_info)
+            .await
+            .map_err(CommunicationError::from)?;
+
+        tokio::time::delay_for(tokio::time::Duration::from_secs(1)).await;
+
         // Notify `ControlMessageHandler` that receiver is initialized.
         self.control_tx
             .send(ControlMessage::DataReceiverInitialized(self.node_id))
             .map_err(CommunicationError::from)?;
 
-        while let Some(res) = self.stream.next().await {
-            match res {
+        let z_sub_stream = subscriber.stream();
+        while let Some(zres) = z_sub_stream.next().await {
+            // println!("ZenohReceiver, rbuf received {:?}", zres.payload);
+            let m = InterProcessMessage::from_rbuf(&zres.payload);
+            // println!("ZenohReceiver, msg received {:?}", m);
+
+            match m {
                 // Push the message to the listening operator executors.
                 Ok(msg) => {
                     // Update pushers before we send the message.
@@ -87,21 +110,34 @@ impl DataReceiver {
                             data: _,
                         } => unreachable!(),
                     };
+
                     match self.stream_id_to_pusher.get_mut(&metadata.stream_id) {
                         Some(pusher) => {
+                            // println!("Sending to pusher {:?}", bytes);
                             if let Err(e) = pusher.send_from_bytes(bytes) {
+                                // println!("Got error from pusher {:?}", e);
                                 return Err(e);
                             }
                         }
-                        None => panic!(
-                            "Receiver does not have any pushers. \
-                                Race condition during data-flow reconfiguration."
-                        ),
+                        None => (),
+                        //println!("Receiver does not have any pushers. {:?}", metadata),
+                        // panic!(
+                        //     "Receiver does not have any pushers. \
+                        //         Race condition during data-flow reconfiguration."
+                        // ),
                     }
                 }
-                Err(e) => return Err(CommunicationError::from(e)),
+                Err(e) => {
+                    slog::warn!(
+                        crate::get_terminal_logger(),
+                        "DataReceiver got error from Zenoh {:?}",
+                        e
+                    );
+                    return Err(CommunicationError::from(e));
+                }
             }
         }
+
         Ok(())
     }
 
@@ -117,31 +153,39 @@ impl DataReceiver {
 /// Receives TCP messages, and pushes them to operators endpoints.
 /// The function receives a vector of framed TCP receiver halves.
 /// It launches a task that listens for new messages for each TCP connection.
+#[cfg(feature = "zenoh_transport")]
 pub(crate) async fn run_receivers(
-    mut receivers: Vec<DataReceiver>,
+    mut receivers: Vec<ZenohDataReceiver>,
 ) -> Result<(), CommunicationError> {
     // Wait for all futures to finish. It will happen only when all streams are closed.
     future::join_all(receivers.iter_mut().map(|receiver| receiver.run())).await;
     Ok(())
 }
 
-/// Listens on a TCP stream, and pushes control messages it receives to the node.
+/// Listens on a Zenoh Subscriber stream, and pushes control messages it receives to the node.
 #[allow(dead_code)]
-pub(crate) struct ControlReceiver {
+#[cfg(feature = "zenoh_transport")]
+pub(crate) struct ZenohControlReceiver {
     /// The id of the node the stream is receiving data from.
     node_id: NodeId,
+    /// Self node id
+    self_node_id: NodeId,
     /// Framed TCP read stream.
-    stream: SplitStream<Framed<TcpStream, ControlMessageCodec>>,
+    // stream: SplitStream<Framed<TcpStream, ControlMessageCodec>>,
+    /// Zenoh Session
+    zsession: Arc<net::Session>,
     /// Tokio channel sender to `ControlMessageHandler`.
     control_tx: UnboundedSender<ControlMessage>,
     /// Tokio channel receiver from `ControlMessageHandler`.
     control_rx: UnboundedReceiver<ControlMessage>,
 }
 
-impl ControlReceiver {
+#[cfg(feature = "zenoh_transport")]
+impl ZenohControlReceiver {
     pub(crate) fn new(
         node_id: NodeId,
-        stream: SplitStream<Framed<TcpStream, ControlMessageCodec>>,
+        self_node_id: NodeId,
+        zsession: Arc<net::Session>,
         control_handler: &mut ControlMessageHandler,
     ) -> Self {
         // Set up control channel.
@@ -149,7 +193,9 @@ impl ControlReceiver {
         control_handler.add_channel_to_control_receiver(node_id, tx);
         Self {
             node_id,
-            stream,
+            // stream,
+            self_node_id,
+            zsession,
             control_tx: control_handler.get_channel_to_handler(),
             control_rx,
         }
@@ -160,12 +206,34 @@ impl ControlReceiver {
         // between channels and handlers (e.g. for fault-tolerance).
         // Notify `ControlMessageHandler` that sender is initialized.
 
+        // Create Zenoh subscription
+
+        let sub_info = zenoh::net::SubInfo {
+            reliability: zenoh::net::protocol::core::Reliability::Reliable,
+            mode: zenoh::net::protocol::core::SubMode::Push,
+            period: None,
+        };
+
+        let resource_name = format!("/from/{}/to/{}/control", self.node_id, self.self_node_id);
+
+        let zsession = self.zsession.clone();
+
+        let mut subscriber = zsession
+            .declare_subscriber(&resource_name.into(), &sub_info)
+            .await
+            .map_err(CommunicationError::from)?;
+
+        // Needed to solve the Write-before-publisher-discovered issue
+        tokio::time::delay_for(tokio::time::Duration::from_secs(1)).await;
+
         self.control_tx
             .send(ControlMessage::ControlReceiverInitialized(self.node_id))
             .map_err(CommunicationError::from)?;
 
-        while let Some(res) = self.stream.next().await {
-            match res {
+        let z_sub_stream = subscriber.stream();
+        while let Some(zres) = z_sub_stream.next().await {
+            match ControlMessage::from_rbuf(&zres.payload) {
+                // Push the message to the listening operator executors.
                 Ok(msg) => {
                     self.control_tx
                         .send(msg)
@@ -182,8 +250,9 @@ impl ControlReceiver {
 /// Receives TCP messages, and pushes them to the ControlHandler
 /// The function receives a vector of framed TCP receiver halves.
 /// It launches a task that listens for new messages for each TCP connection.
+#[cfg(feature = "zenoh_transport")]
 pub(crate) async fn run_control_receivers(
-    mut receivers: Vec<ControlReceiver>,
+    mut receivers: Vec<ZenohControlReceiver>,
 ) -> Result<(), CommunicationError> {
     // Wait for all futures to finish. It will happen only when all streams are closed.
     future::join_all(receivers.iter_mut().map(|receiver| receiver.run())).await;

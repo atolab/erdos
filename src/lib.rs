@@ -154,6 +154,14 @@
 #![feature(specialization)]
 #![feature(box_into_pin)]
 
+// Compile error if more transport features are enabled at once
+#[cfg(all(
+    feature = "tcp_transport",
+    feature = "zenoh_transport",
+    feature = "zenoh_zerocopy_transport"
+))]
+compile_error!("Only one from feature \"tcp_transport\", feature \"zenoh_transport\" and, feature \"zenoh_zerocopy_transport\" can be enabled at any time!");
+
 // Re-exports of libraries used in macros.
 #[doc(hidden)]
 pub use ::slog;
@@ -207,7 +215,9 @@ pub fn generate_id() -> Uuid {
 }
 
 /// Wrapper around [`uuid::Uuid`] that implements [`Abomonation`](abomonation::Abomonation) for fast serialization.
-#[derive(Abomonation, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Abomonation, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct Uuid(uuid::Bytes);
 
 impl Uuid {
@@ -250,14 +260,25 @@ pub fn reset() {
 }
 
 lazy_static! {
-    static ref TERMINAL_LOGGER: Logger =
-        Logger::root(std::sync::Mutex::new(term_full()).fuse(), slog::o!());
+    static ref TERMINAL_LOGGER: Logger = {
+        let drain = std::sync::Mutex::new(term_full()).fuse();
+        // let drain = slog_async::Async::new(drain).build().fuse();
+        // let drain = AtomicSwitch::new(drain);
+        // let decorator = slog_term::TermDecorator::new().build();
+        // let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        // let drain = slog_async::Async::new(drain).build().fuse();
+        Logger::root(drain, slog::o!())
+    };
 }
 
 /// Returns a logger that prints messages to the console.
 pub fn get_terminal_logger() -> slog::Logger {
     TERMINAL_LOGGER.clone()
 }
+
+
+#[cfg(feature = "zenoh_zerocopy_transport")]
+static SHM_SIZE: usize = 512 * 1024 * 1024;
 
 /// Defines command line arguments for running a multi-node ERDOS application.
 pub fn new_app(name: &str) -> clap::App {
